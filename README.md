@@ -1,13 +1,19 @@
 # khttpd
 
-A high-performance, header-only-style HTTP/WebSocket server framework built on top of [Boost.Beast](https://www.boost.org/doc/libs/release/libs/beast/) and [Boost.Asio](https://www.boost.org/doc/libs/release/libs/asio/), managed with [Bazel](https://bazel.build/).
+A high-performance, header-only-style HTTP/WebSocket server framework built on top
+of [Boost.Beast](https://www.boost.org/doc/libs/release/libs/beast/)
+and [Boost.Asio](https://www.boost.org/doc/libs/release/libs/asio/), managed with [Bazel](https://bazel.build/).
+
+[文档](doc/index.md)
 
 ## Features
 
 - **HTTP Server** — Multi-threaded, async I/O server powered by Boost.Asio strand-based concurrency
 - **WebSocket Support** — Full WebSocket lifecycle management (onopen / onmessage / onclose / onerror)
-- **Routing** — Express-style route registration with path parameters (`/users/:id`), query params, and method specificity sorting
-- **Controller Pattern** — CRTP-based `BaseController` with `KHTTPD_ROUTE` / `KHTTPD_WSROUTE` macros for clean route definitions
+- **Routing** — Express-style route registration with path parameters (`/users/:id`), query params, and method
+  specificity sorting
+- **Controller Pattern** — CRTP-based `BaseController` with `KHTTPD_ROUTE` / `KHTTPD_WSROUTE` macros for clean route
+  definitions
 - **HTTP Client** — Sync & async HTTP client with SSL, bearer token, base URL, and JSON body serialization
 - **WebSocket Client** — Async WebSocket client counterpart
 - **Interceptors** — Pre-request / post-response middleware pipeline
@@ -23,15 +29,15 @@ A high-performance, header-only-style HTTP/WebSocket server framework built on t
 
 ## Tech Stack
 
-| Component | Version |
-|-----------|---------|
-| Boost | 1.89.0 |
-| Boost.Beast | 1.89.0 |
-| Boost.Asio | 1.89.0 |
-| fmt | 12.0.0 |
+| Component           | Version        |
+|---------------------|----------------|
+| Boost               | 1.89.0         |
+| Boost.Beast         | 1.89.0         |
+| Boost.Asio          | 1.89.0         |
+| fmt                 | 12.0.0         |
 | OpenSSL / BoringSSL | 3.3.1 / latest |
-| SQLite3 | 3.50.4 |
-| Build System | Bazel (bzlmod) |
+| SQLite3             | 3.50.4         |
+| Build System        | Bazel (bzlmod) |
 
 ## Quick Start
 
@@ -42,21 +48,21 @@ In your project's `MODULE.bazel`:
 ```python
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
-bazel_dep(name = "platforms", version = "1.0.0")
-bazel_dep(name = "rules_cc", version = "0.2.13")
-bazel_dep(name = "fmt", version = "12.0.0")
-bazel_dep(name = "boost", version = "1.89.0.bcr.2")
-bazel_dep(name = "boost.asio", version = "1.89.0.bcr.2")
-bazel_dep(name = "boost.beast", version = "1.89.0.bcr.2")
-bazel_dep(name = "boost.json", version = "1.89.0.bcr.2")
-bazel_dep(name = "boost.filesystem", version = "1.89.0.bcr.2")
-bazel_dep(name = "boost.url", version = "1.89.0.bcr.2")
-bazel_dep(name = "boringssl", version = "0.20251110.0")
+bazel_dep(name="platforms", version="1.0.0")
+bazel_dep(name="rules_cc", version="0.2.13")
+bazel_dep(name="fmt", version="12.0.0")
+bazel_dep(name="boost", version="1.89.0.bcr.2")
+bazel_dep(name="boost.asio", version="1.89.0.bcr.2")
+bazel_dep(name="boost.beast", version="1.89.0.bcr.2")
+bazel_dep(name="boost.json", version="1.89.0.bcr.2")
+bazel_dep(name="boost.filesystem", version="1.89.0.bcr.2")
+bazel_dep(name="boost.url", version="1.89.0.bcr.2")
+bazel_dep(name="boringssl", version="0.20251110.0")
 
 http_archive(
-    name = "khttpd",
-    strip_prefix = "khttpd-0.1.0",
-    url = "https://github.com/ClangTools/khttpd/archive/refs/tags/v0.1.0.tar.gz",
+  name="khttpd",
+  strip_prefix="khttpd-0.1.0",
+  url="https://github.com/ClangTools/khttpd/archive/refs/tags/v0.1.0.tar.gz",
 )
 ```
 
@@ -150,28 +156,28 @@ framework/
 
 ### HttpContext
 
-| Method | Description |
-|--------|-------------|
-| `path()` | Request path |
-| `method()` | HTTP verb |
-| `get_query_param(key)` | Query string parameter |
-| `get_path_param(key)` | Path parameter (from `:param` routes) |
-| `get_header(name)` | Request header |
-| `get_cookie(key)` | Cookie value |
-| `get_json()` | Parse body as `boost::json::value` |
-| `get_form_param(key)` | Form field (`application/x-www-form-urlencoded`) |
-| `get_multipart_field(key)` | Multipart text field |
-| `get_uploaded_files(field)` | Uploaded files as `vector<MultipartFile>` |
-| `set_status(code)` | Response status |
-| `set_body(str)` | Response body |
-| `set_body_json(obj)` | Serialize object to JSON response |
-| `set_body_from(obj)` | `value_from` + JSON response |
-| `set_content_type(type)` | Content-Type header |
-| `set_header(name, value)` | Custom response header |
-| `set_cookie(key, value, opts)` | Set response cookie |
-| `chunked(handler)` | Enable chunked transfer streaming |
-| `set_attribute(key, value)` | Store arbitrary data (for interceptors) |
-| `get_attribute_as<T>(key)` | Retrieve typed attribute |
+| Method                         | Description                                      |
+|--------------------------------|--------------------------------------------------|
+| `path()`                       | Request path                                     |
+| `method()`                     | HTTP verb                                        |
+| `get_query_param(key)`         | Query string parameter                           |
+| `get_path_param(key)`          | Path parameter (from `:param` routes)            |
+| `get_header(name)`             | Request header                                   |
+| `get_cookie(key)`              | Cookie value                                     |
+| `get_json()`                   | Parse body as `boost::json::value`               |
+| `get_form_param(key)`          | Form field (`application/x-www-form-urlencoded`) |
+| `get_multipart_field(key)`     | Multipart text field                             |
+| `get_uploaded_files(field)`    | Uploaded files as `vector<MultipartFile>`        |
+| `set_status(code)`             | Response status                                  |
+| `set_body(str)`                | Response body                                    |
+| `set_body_json(obj)`           | Serialize object to JSON response                |
+| `set_body_from(obj)`           | `value_from` + JSON response                     |
+| `set_content_type(type)`       | Content-Type header                              |
+| `set_header(name, value)`      | Custom response header                           |
+| `set_cookie(key, value, opts)` | Set response cookie                              |
+| `chunked(handler)`             | Enable chunked transfer streaming                |
+| `set_attribute(key, value)`    | Store arbitrary data (for interceptors)          |
+| `get_attribute_as<T>(key)`     | Retrieve typed attribute                         |
 
 ### WebSocket
 
