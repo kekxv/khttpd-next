@@ -20,8 +20,7 @@ namespace khttpd::framework
     bool is_text;
     boost::beast::error_code error_code;
     std::string path;
-    std::weak_ptr<WebsocketSession> session_;
-    
+
     std::map<std::string, std::any> extended_data;
 
     WebsocketContext(std::weak_ptr<WebsocketSession> session, std::string  msg, bool text,

@@ -607,6 +607,216 @@ TEST(WebsocketRouterTest, NoHandlerRegistered)
   ASSERT_TRUE(state.mock_session_ptr->last_sent_message.empty());
 }
 
+// Test PUT, DELETE, OPTIONS methods
+TEST(HttpRouterTest, PutDelOptionsMethods)
+{
+  khttpd_fw::HttpRouter router;
+  bool put_called = false;
+  bool del_called = false;
+  bool options_called = false;
+
+  router.put("/resource/:id", [&](khttpd_fw::HttpContext& ctx) {
+    put_called = true;
+    ctx.set_status(http::status::ok);
+  });
+  router.del("/resource/:id", [&](khttpd_fw::HttpContext& ctx) {
+    del_called = true;
+    ctx.set_status(http::status::no_content);
+  });
+  router.options("/resource", [&](khttpd_fw::HttpContext& ctx) {
+    options_called = true;
+    ctx.set_status(http::status::ok);
+  });
+
+  // Test PUT
+  {
+    http::request<http::string_body> req = make_request(http::verb::put, "/resource/1");
+    http::response<http::string_body> res;
+    khttpd_fw::HttpContext ctx(req, res);
+    router.dispatch(ctx);
+    ASSERT_TRUE(put_called);
+    ASSERT_EQ(ctx.get_response().result(), http::status::ok);
+  }
+
+  // Test DELETE
+  {
+    http::request<http::string_body> req = make_request(http::verb::delete_, "/resource/2");
+    http::response<http::string_body> res;
+    khttpd_fw::HttpContext ctx(req, res);
+    router.dispatch(ctx);
+    ASSERT_TRUE(del_called);
+    ASSERT_EQ(ctx.get_response().result(), http::status::no_content);
+  }
+
+  // Test OPTIONS
+  {
+    http::request<http::string_body> req = make_request(http::verb::options, "/resource");
+    http::response<http::string_body> res;
+    khttpd_fw::HttpContext ctx(req, res);
+    router.dispatch(ctx);
+    ASSERT_TRUE(options_called);
+    ASSERT_EQ(ctx.get_response().result(), http::status::ok);
+  }
+}
+
+// Test route update (re-registering same path)
+TEST(HttpRouterTest, RouteUpdate)
+{
+  khttpd_fw::HttpRouter router;
+  bool handler_v1_called = false;
+  bool handler_v2_called = false;
+
+  router.get("/api/v1", [&](khttpd_fw::HttpContext& ctx) {
+    handler_v1_called = true;
+    ctx.set_status(http::status::ok);
+  });
+
+  // Re-register same path with different handler
+  router.get("/api/v1", [&](khttpd_fw::HttpContext& ctx) {
+    handler_v2_called = true;
+    ctx.set_status(http::status::accepted);
+  });
+
+  http::request<http::string_body> req = make_request(http::verb::get, "/api/v1");
+  http::response<http::string_body> res;
+  khttpd_fw::HttpContext ctx(req, res);
+  router.dispatch(ctx);
+
+  ASSERT_FALSE(handler_v1_called); // Old handler should NOT be called
+  ASSERT_TRUE(handler_v2_called);  // New handler should be called
+  ASSERT_EQ(ctx.get_response().result(), http::status::accepted);
+}
+
+// Test interceptor integration with dispatch
+TEST(HttpRouterTest, InterceptorIntegration)
+{
+  khttpd_fw::HttpRouter router;
+  bool handler_called = false;
+  bool post_called = false;
+
+  class TestInterceptor : public khttpd_fw::Interceptor {
+  public:
+    bool* post_ptr;
+    TestInterceptor(bool* p) : post_ptr(p) {}
+    khttpd_fw::InterceptorResult handle_request(khttpd_fw::HttpContext& ctx) override {
+      return khttpd_fw::InterceptorResult::Stop; // Stop processing
+    }
+    void handle_response(khttpd_fw::HttpContext& ctx) override {
+      *post_ptr = true;
+      ctx.set_header("X-Post-Interceptor", "yes");
+    }
+  };
+
+  router.add_interceptor(std::make_shared<TestInterceptor>(&post_called));
+
+  router.get("/stopped", [&](khttpd_fw::HttpContext& ctx) {
+    handler_called = true;
+    ctx.set_status(http::status::ok);
+  });
+
+  http::request<http::string_body> req = make_request(http::verb::get, "/stopped");
+  http::response<http::string_body> res;
+  khttpd_fw::HttpContext ctx(req, res);
+
+  // Simulate HttpSession::handle_request interceptor flow
+  auto pre_result = router.run_pre_interceptors(ctx);
+  if (pre_result == khttpd_fw::InterceptorResult::Stop) {
+    router.run_post_interceptors(ctx); // Post-interceptors still run
+  } else {
+    router.dispatch(ctx);
+    router.run_post_interceptors(ctx);
+  }
+
+  ASSERT_FALSE(handler_called); // Handler should NOT be called
+  ASSERT_TRUE(post_called);     // Post-interceptor should still run
+  ASSERT_EQ(ctx.get_response()["X-Post-Interceptor"], "yes");
+}
+
+// Test exception dispatcher fallthrough when no handler matches
+TEST(HttpRouterTest, ExceptionDispatcherFallthrough)
+{
+  khttpd_fw::HttpRouter router;
+  auto dispatcher = std::make_shared<khttpd_fw::ExceptionDispatcher>();
+
+  bool int_handled = false;
+  dispatcher->on<int>([&](const int&, khttpd_fw::HttpContext& ctx) {
+    int_handled = true;
+    ctx.set_body("int");
+  });
+
+  router.add_exception_handler(dispatcher);
+
+  // Throw a type that no handler registered for
+  http::request<http::string_body> req;
+  http::response<http::string_body> res;
+  khttpd_fw::HttpContext ctx(req, res);
+
+  double d = 3.14;
+  router.handle_exception(std::make_exception_ptr(d), ctx);
+
+  ASSERT_FALSE(int_handled); // int handler should NOT be called
+  // Default fallback should set 500
+  ASSERT_EQ(ctx.get_response().result(), http::status::internal_server_error);
+}
+
+// Test wildcard last param with slashes (already tested but add explicit verification)
+TEST(HttpRouterTest, WildcardLastParamWithSlashes)
+{
+  khttpd_fw::HttpRouter router;
+  std::string captured;
+
+  router.get("/files/:filepath", [&](khttpd_fw::HttpContext& ctx) {
+    captured = ctx.get_path_param("filepath").value_or("");
+    ctx.set_status(http::status::ok);
+  });
+
+  http::request<http::string_body> req = make_request(http::verb::get, "/files/a/b/c/d.txt");
+  http::response<http::string_body> res;
+  khttpd_fw::HttpContext ctx(req, res);
+  router.dispatch(ctx);
+
+  ASSERT_TRUE(captured == "a/b/c/d.txt");
+  ASSERT_EQ(ctx.get_response().result(), http::status::ok);
+}
+
+// Test WebSocket handler overwrite
+TEST(WebsocketRouterTest, HandlerOverwrite)
+{
+  khttpd_fw::WebsocketRouter router;
+  WsHandlerState state;
+  std::string test_path = "/overwrite_test";
+
+  state.mock_session_ptr = std::make_shared<MockWebsocketSession>();
+  std::shared_ptr<khttpd_fw::WebsocketSession> base_mock_session =
+    std::static_pointer_cast<khttpd_fw::WebsocketSession>(state.mock_session_ptr);
+
+  // Register first handler
+  router.add_handler(
+    test_path,
+    [&](khttpd_fw::WebsocketContext& ctx) {
+      state.on_open_called = true;
+      state.path_received = "v1";
+    },
+    nullptr, nullptr, nullptr
+  );
+
+  // Register second handler (should overwrite)
+  router.add_handler(
+    test_path,
+    [&](khttpd_fw::WebsocketContext& ctx) {
+      state.on_open_called = true;
+      state.path_received = "v2";
+    },
+    nullptr, nullptr, nullptr
+  );
+
+  khttpd_fw::WebsocketContext ctx(base_mock_session, test_path);
+  router.dispatch_open(test_path, ctx);
+
+  ASSERT_TRUE(state.on_open_called);
+  ASSERT_EQ(state.path_received, "v2"); // Should use the second handler
+}
+
 TEST(WebsocketRouterTest, SpecificHandlerRegistered)
 {
   khttpd_fw::WebsocketRouter router;
