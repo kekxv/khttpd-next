@@ -1,0 +1,14 @@
+name: Publish to BCR
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    uses: kekxv/bcr/.github/workflows/publish_to_bcr.yml@publish-to-bcr
+    with:
+      tag_name: ${{ github.event.release.tag_name }}
+      module_name: "khttpd"
+    secrets:
+      publish_token: ${{ secrets.BCR_PUBLISH_TOKEN }}
