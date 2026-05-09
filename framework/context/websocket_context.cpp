@@ -9,8 +9,7 @@ namespace khttpd::framework
 {
   WebsocketContext::WebsocketContext(std::weak_ptr<WebsocketSession> session, std::string msg, bool text,
                                      std::string path_str)
-    : session_weak_ptr(std::move(session)), message(std::move(msg)), is_text(text), path(std::move(path_str)),
-      session_(std::move(session))
+    : session_weak_ptr(std::move(session)), message(std::move(msg)), is_text(text), path(std::move(path_str))
   {
     if (const auto session_shared_ptr = session_weak_ptr.lock())
     {

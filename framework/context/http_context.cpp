@@ -15,7 +15,7 @@ namespace khttpd::framework
     const size_t first = str.find_first_not_of(" \t\n\r");
     if (std::string::npos == first)
     {
-      return str;
+      return "";
     }
     const size_t last = str.find_last_not_of(" \t\n\r");
     return str.substr(first, last - first + 1);
@@ -427,6 +427,21 @@ namespace khttpd::framework
 
   void HttpContext::set_cookie(const std::string& key, const std::string& value, const CookieOptions& options) const
   {
+    // Reject values containing characters that could break the header or enable injection
+    if (key.find(';') != std::string::npos || key.find(',') != std::string::npos ||
+        key.find('\r') != std::string::npos || key.find('\n') != std::string::npos ||
+        key.find('=') != std::string::npos)
+    {
+      fmt::print(stderr, "Warning: Invalid cookie key '{}' - contains prohibited characters\n", key);
+      return;
+    }
+    if (value.find(';') != std::string::npos || value.find(',') != std::string::npos ||
+        value.find('\r') != std::string::npos || value.find('\n') != std::string::npos)
+    {
+      fmt::print(stderr, "Warning: Invalid cookie value '{}' - contains prohibited characters\n", value);
+      return;
+    }
+
     std::string cookie_str = key + "=" + value;
 
     if (options.max_age >= 0)

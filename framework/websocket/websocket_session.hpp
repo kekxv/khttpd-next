@@ -6,6 +6,7 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <memory>
 #include <string>
+#include <queue>
 #include <boost/uuid/uuid_generators.hpp>
 #include "router/websocket_router.hpp"
 
@@ -50,10 +51,14 @@ namespace khttpd::framework
     // 定义一个阈值，小于这个大小的消息不进行分片，直接发送。
     static constexpr size_t const auto_fragment_threshold_ = fragment_size_ * 2;
 
+    // Write queue to serialize concurrent async_write calls
+    std::queue<std::pair<std::shared_ptr<const std::string>, bool>> write_queue_;
+    bool writing_ = false;
+
     void on_handshake(beast::error_code ec);
     void do_read();
     void on_read(beast::error_code ec, std::size_t bytes_transferred);
-    void do_write(std::shared_ptr<const std::string> ss, bool is_text);
+    void do_write_next();
     void on_write(beast::error_code ec, std::size_t bytes_transferred);
     void do_close(beast::error_code ec = {});
   };

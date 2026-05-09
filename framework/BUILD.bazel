@@ -34,12 +34,12 @@ cc_library(
     strip_include_prefix = "",  # 确保头文件路径正确，例如 #include "context/http_context.hpp"
     visibility = ["//visibility:public"],
     deps = [
-        "@boost//asio",
-        "@boost//beast",
-        "@boost//filesystem",
-        "@boost//json",
-        "@boost//url",
-        "@boost//uuid",
+        "@boost.asio",
+        "@boost.beast",
+        "@boost.filesystem",
+        "@boost.json",
+        "@boost.url",
+        "@boost.uuid",
         "@fmt",  # 用于日志输出
     ],
 )

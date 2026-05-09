@@ -7,6 +7,8 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <chrono>
+#include <atomic>
 
 namespace khttpd::framework
 {
@@ -34,57 +36,61 @@ namespace khttpd::framework
 
     ~IoContextPool()
     {
-      stop();
+      shutdown();
     }
 
     void stop()
     {
-      // 确保只停止一次，防止析构和显式调用 stop 冲突
-      std::call_once(stop_flag_, [this]()
+      // 快速路径：重置 work guard 并通知 io_context 停止
+      // 不在此函数中 join 线程，避免信号处理线程中 join 自身导致崩溃
+      if (!stopped_.exchange(true))
       {
-        work_guard_.reset(); // 允许 run() 退出
-        ioc_.stop(); // 显式发出停止信号
+        work_guard_.reset();
+        ioc_.stop();
+      }
+    }
 
-        // 等待所有线程结束
-        for (auto& t : threads_)
+    // 等待所有工作线程结束（由析构函数调用，不在信号上下文中）
+    void shutdown()
+    {
+      if (!stopped_.exchange(true))
+      {
+        work_guard_.reset();
+        ioc_.stop();
+      }
+
+      // 等待线程结束 — 只在析构路径调用，不在信号处理中
+      for (auto& t : threads_)
+      {
+        if (t.joinable())
         {
-          if (t.joinable())
-          {
-            t.join();
-          }
+          t.join();
         }
-        threads_.clear();
-      });
+      }
+      threads_.clear();
     }
 
   private:
     explicit IoContextPool(unsigned int count = std::thread::hardware_concurrency())
       : work_guard_(boost::asio::make_work_guard(ioc_))
     {
-      // 如果检测失败（返回0）或者核心数少于1，保底使用 1 个线程
-      // 如果为了提高并发吞吐量，也可以设为 count * 2
       if (count <= 0) count = 1;
 
       threads_.reserve(count * 2);
 
-      // 2. 启动线程池
       for (unsigned int i = 0; i < count; ++i)
       {
         threads_.emplace_back([this]()
         {
-          // 每个线程都运行同一个 io_context
-          // ASIO 会自动调度 handler 到空闲线程
           ioc_.run();
         });
       }
     }
 
-
     boost::asio::io_context ioc_;
     boost::asio::executor_work_guard<boost::asio::io_context::executor_type> work_guard_;
     std::vector<std::thread> threads_;
-    std::once_flag stop_flag_;
+    std::atomic<bool> stopped_{false};
   };
 }
-
 #endif // KHTTPD_FRAMEWORK_CLIENT_IO_CONTEXT_POOL_HPP
