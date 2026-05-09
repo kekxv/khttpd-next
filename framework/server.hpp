@@ -5,12 +5,10 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/signal_set.hpp>
-#include <thread>
-#include <vector>
+#include <boost/filesystem.hpp>
 #include <memory>
 #include <optional>
 
-// 包含完整定义，因为 Server 现在拥有它们
 #include "router/http_router.hpp"
 #include "router/websocket_router.hpp"
 
@@ -22,27 +20,24 @@ namespace khttpd::framework
   class Server : public std::enable_shared_from_this<Server>
   {
   public:
-    // 构造函数：现在只接受端口和线程数量。路由器在内部创建。
     Server(const tcp::endpoint& endpoint, std::string web_root, int num_threads = 1);
 
     HttpRouter& get_http_router();
-    const HttpRouter& get_http_router() const; // const 版本
+    const HttpRouter& get_http_router() const;
 
     void add_interceptor(std::shared_ptr<Interceptor> interceptor);
 
     WebsocketRouter& get_websocket_router();
-    const WebsocketRouter& get_websocket_router() const; // const 版本
+    const WebsocketRouter& get_websocket_router() const;
 
     void run();
 
     void stop();
 
   private:
-    // std::optional<net::io_context> ioc_;
-    // int num_threads_;
-    std::vector<std::thread> threads_;
     net::signal_set signals_;
     const std::string web_root_;
+    boost::filesystem::path canonical_web_root_;
 
     tcp::acceptor acceptor_;
 

@@ -17,11 +17,11 @@ namespace khttpd::framework
     int literal_segments = 0;
     int dynamic_segments = 0;
 
-    std::sregex_iterator it(path_pattern.begin(), path_pattern.end(), param_regex);
-    std::sregex_iterator end;
+    std::regex escape_regex(R"([\\\.\+\*\?\|\(\)\[\]\{\}\^\$])");
 
     auto current_pos = path_pattern.begin();
     int param_count = 0;
+    std::sregex_iterator end;
 
     for (std::sregex_iterator temp_it(path_pattern.begin(), path_pattern.end(), param_regex); temp_it != end; ++temp_it)
     {
@@ -30,7 +30,7 @@ namespace khttpd::framework
 
     int current_param_index = 0;
 
-    it = std::sregex_iterator(path_pattern.begin(), path_pattern.end(), param_regex);
+    auto it = std::sregex_iterator(path_pattern.begin(), path_pattern.end(), param_regex);
 
     while (it != end)
     {
@@ -53,7 +53,7 @@ namespace khttpd::framework
           literal_segments++;
         }
       }
-      regex_str += std::regex_replace(literal_part, std::regex(R"([\.\+\*\?\|\(\)\[\]\{\}\^\$])"), "\\$&");
+      regex_str += std::regex_replace(literal_part, escape_regex, "\\$&");
 
       param_names.push_back(it->str().substr(1));
       dynamic_segments++;
@@ -90,7 +90,7 @@ namespace khttpd::framework
         literal_segments++;
       }
     }
-    regex_str += std::regex_replace(tail_literal_part, std::regex(R"([\.\+\*\?\|\(\)\[\]\{\}\^\$])"), "\\$&");
+    regex_str += std::regex_replace(tail_literal_part, escape_regex, "\\$&");
     regex_str += "$";
 
     return {std::regex(regex_str), param_names, literal_segments, dynamic_segments};

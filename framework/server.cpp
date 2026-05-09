@@ -44,7 +44,14 @@ namespace khttpd::framework
       throw std::runtime_error(fmt::format("Failed to listen: {}", ec.message()));
     }
 
-    // 检查 web_root 路径
+    // Pre-compute canonical web root path once (not per-connection)
+    boost::system::error_code path_ec;
+    canonical_web_root_ = boost::filesystem::canonical(web_root_, path_ec);
+    if (path_ec)
+    {
+      fmt::print(stderr, "Warning: Cannot canonicalize web_root '{}': {}\n", web_root_, path_ec.message());
+    }
+
     if (!boost::filesystem::exists(web_root_, ec))
     {
       fmt::print(stderr, "Warning: Web root directory '{}' does not exist. Static file serving may fail. Error: {}\n",
@@ -127,7 +134,7 @@ namespace khttpd::framework
     }
     else
     {
-      std::make_shared<HttpSession>(std::move(socket), http_router_, websocket_router_, web_root_)->run();
+      std::make_shared<HttpSession>(std::move(socket), http_router_, websocket_router_, web_root_, canonical_web_root_)->run();
     }
 
     if (acceptor_.is_open())

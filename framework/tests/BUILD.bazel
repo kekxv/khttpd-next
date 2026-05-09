@@ -1,3 +1,5 @@
+load("@rules_cc//cc:defs.bzl", "cc_test")
+
 cc_test(
     name = "context_test",
     srcs = ["context_test.cpp"],
@@ -76,6 +78,36 @@ cc_test(
 cc_test(
     name = "cronjob_test",
     srcs = ["cronjob_test.cpp"],
+    copts = [
+        "-std=c++17",
+        "-Wall",
+        "-pedantic",
+    ],
+    deps = [
+        "//framework",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "websocket_context_test",
+    srcs = ["websocket_context_test.cpp"],
+    copts = [
+        "-std=c++17",
+        "-Wall",
+        "-pedantic",
+    ],
+    deps = [
+        "//framework",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "http_context_multipart_edge_test",
+    srcs = ["http_context_multipart_edge_test.cpp"],
     copts = [
         "-std=c++17",
         "-Wall",

@@ -88,7 +88,55 @@ namespace khttpd::framework
   void WebsocketSession::send_message(const std::string& msg, bool is_text_msg)
   {
     auto ss = std::make_shared<const std::string>(msg);
-    do_write(ss, is_text_msg);
+    write_queue_.emplace(ss, is_text_msg);
+    if (!writing_)
+    {
+      writing_ = true;
+      do_write_next();
+    }
+  }
+
+  void WebsocketSession::do_write_next()
+  {
+    if (write_queue_.empty())
+    {
+      writing_ = false;
+      return;
+    }
+
+    auto item = std::move(write_queue_.front());
+    write_queue_.pop();
+    auto& ss = item.first;
+    auto is_text_msg = item.second;
+
+    ws_.text(is_text_msg);
+
+    if (ss->length() < auto_fragment_threshold_)
+    {
+      ws_.async_write(net::buffer(*ss),
+                      beast::bind_front_handler(&WebsocketSession::on_write, shared_from_this()));
+    }
+    else
+    {
+      auto buffer_sequence_ptr = std::make_shared<std::vector<net::const_buffer>>();
+      buffer_sequence_ptr->reserve(ss->length() / fragment_size_ + 1);
+
+      size_t offset = 0;
+      while (offset < ss->length())
+      {
+        size_t current_chunk_size = std::min(fragment_size_, ss->length() - offset);
+        buffer_sequence_ptr->emplace_back(ss->data() + offset, current_chunk_size);
+        offset += current_chunk_size;
+      }
+
+      ws_.async_write(
+        *buffer_sequence_ptr,
+        [ss, buffer_sequence_ptr, self = shared_from_this()](beast::error_code ec, std::size_t bytes)
+        {
+          self->on_write(ec, bytes);
+        }
+      );
+    }
   }
 
   bool WebsocketSession::send_message(const std::string& id, const std::string& msg, bool is_text)
@@ -98,66 +146,28 @@ namespace khttpd::framework
 
   size_t WebsocketSession::send_message(const std::vector<std::string>& ids, const std::string& msg, bool is_text)
   {
-    std::unique_lock<std::mutex> lock{m_sessions_mutex};
-    size_t count = 0;
-    for (const auto& id : ids)
+    // Collect target session pointers under lock, then release before sending
+    std::vector<std::shared_ptr<WebsocketSession>> targets;
     {
-      auto item = m_sessions_id_.find(id);
-      if (item == m_sessions_id_.end())
+      std::unique_lock<std::mutex> lock{m_sessions_mutex};
+      for (const auto& id : ids)
       {
-        continue;
+        auto item = m_sessions_id_.find(id);
+        if (item == m_sessions_id_.end())
+        {
+          continue;
+        }
+        targets.push_back(item->second);
       }
-      item->second->send_message(msg, is_text);
+    }
+    // Send messages outside the lock
+    size_t count = 0;
+    for (const auto& session : targets)
+    {
+      session->send_message(msg, is_text);
       count++;
     }
     return count;
-  }
-
-  void WebsocketSession::do_write(std::shared_ptr<const std::string> ss, bool is_text_msg)
-  {
-    // 设置消息是文本还是二进制
-    ws_.text(is_text_msg);
-
-    // --- 检查消息大小，决定是否分片 ---
-    if (ss->length() < auto_fragment_threshold_)
-    {
-      // 消息不大，直接发送，无需分片。
-      // 这可以避免为小消息创建 vector 和 buffer sequence 的开销。
-      ws_.async_write(net::buffer(*ss),
-                      beast::bind_front_handler(&WebsocketSession::on_write, shared_from_this()));
-    }
-    else
-    {
-      // 消息很大，需要分片发送。
-      // 1. 创建一个缓冲区序列（vector of const_buffer）的 shared_ptr。
-      //    必须用 shared_ptr 来管理，因为它需要在异步操作期间保持存活。
-      auto buffer_sequence_ptr = std::make_shared<std::vector<net::const_buffer>>();
-
-      // 2. 预留空间以提高效率
-      buffer_sequence_ptr->reserve(ss->length() / fragment_size_ + 1);
-
-      // 3. 将大字符串切分成多个 buffer，并添加到序列中。
-      //    这个过程不会拷贝字符串数据，net::const_buffer 只是一个视图。
-      size_t offset = 0;
-      while (offset < ss->length())
-      {
-        size_t current_chunk_size = std::min(fragment_size_, ss->length() - offset);
-        buffer_sequence_ptr->emplace_back(ss->data() + offset, current_chunk_size);
-        offset += current_chunk_size;
-      }
-
-      // 4. 调用 async_write，传入缓冲区序列。
-      //    Beast 会自动将序列中的每个 buffer 作为一帧来发送。
-      ws_.async_write(
-        *buffer_sequence_ptr, // 传入缓冲区序列
-        [ss, buffer_sequence_ptr, self = shared_from_this()](beast::error_code ec, std::size_t bytes)
-        {
-          // 这个 lambda 的作用是确保 ss 和 buffer_sequence_ptr 的生命周期
-          // 能够覆盖整个异步写操作。当 on_write 被调用时，它们依然有效。
-          self->on_write(ec, bytes);
-        }
-      );
-    }
   }
 
   void WebsocketSession::on_write(beast::error_code ec, std::size_t bytes_transferred)
@@ -184,16 +194,16 @@ namespace khttpd::framework
       WebsocketContext close_ctx(shared_from_this(), initial_path_, ec);
       {
         std::unique_lock<std::mutex> lock{m_sessions_mutex};
-        for (auto item = m_sessions_id_.begin(); item != m_sessions_id_.end(); ++item)
-        {
-          if (item->first == id)
-          {
-            m_sessions_id_.erase(item);
-            break;
-          }
-        }
+        m_sessions_id_.erase(id);
       }
       websocket_router_.dispatch_close(initial_path_, close_ctx);
+    }
+    // Close the WebSocket stream to properly release the TCP connection
+    beast::error_code close_ec;
+    ws_.close(ws::close_code::normal, close_ec);
+    if (close_ec && close_ec != boost::asio::error::operation_aborted)
+    {
+      fmt::print(stderr, "WebSocket close error for path '{}': {}\n", initial_path_, close_ec.message());
     }
   }
 }

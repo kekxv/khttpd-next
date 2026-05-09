@@ -5,6 +5,8 @@
 #include <boost/beast.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <memory>
+#include <queue>
+#include <sstream>
 #include "router/http_router.hpp"
 #include "websocket/websocket_session.hpp"
 
@@ -23,7 +25,9 @@ namespace khttpd::framework
   class HttpSession : public std::enable_shared_from_this<HttpSession>
   {
   public:
-    HttpSession(tcp::socket&& socket, HttpRouter& router, WebsocketRouter& ws_router, const std::string& web_root);
+    HttpSession(tcp::socket&& socket, HttpRouter& router, WebsocketRouter& ws_router,
+                const std::string& web_root,
+                const boost::filesystem::path& canonical_web_root);
 
     // 启动会话
     void run();
@@ -37,10 +41,16 @@ namespace khttpd::framework
     HttpRouter& router_;
     WebsocketRouter& websocket_router_;
     const boost::filesystem::path web_root_path_;
-    boost::filesystem::path canonical_web_root_path_;
+    const boost::filesystem::path canonical_web_root_path_;
     std::shared_ptr<WebsocketSession> ws_session_;
     std::optional<http::response_serializer<http::string_body>> sr_;
     std::shared_ptr<HttpContext> ctx = nullptr;
+
+    // Chunked streaming support
+    std::shared_ptr<std::queue<std::string>> chunk_queue_;
+    std::shared_ptr<std::mutex> chunk_mtx_;
+    std::shared_ptr<bool> chunk_writing_;
+    std::shared_ptr<beast::error_code> chunk_error_;
 
     void do_read();
     void on_read(const beast::error_code& ec, std::size_t bytes_transferred);

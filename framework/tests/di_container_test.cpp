@@ -267,3 +267,40 @@ TEST_F(DIContainerTest, NestedResolutionOnlyConstructsOnce)
   ASSERT_EQ(s_DependencyA_count, 1);
   ASSERT_EQ(mainComp1->getDepB()->getDepA().get(), a.get());
 }
+
+// Test circular dependency detection
+class CircularA : public ComponentBase
+{
+public:
+  explicit CircularA(std::shared_ptr<class CircularB> b) : depB(b) {}
+  std::shared_ptr<CircularB> depB;
+};
+
+class CircularB : public ComponentBase
+{
+public:
+  explicit CircularB(std::shared_ptr<CircularA> a) : depA(a) {}
+  std::shared_ptr<CircularA> depA;
+};
+
+TEST_F(DIContainerTest, CircularDependencyDetection)
+{
+  container.register_component<CircularA, CircularB>();
+  container.register_component<CircularB, CircularA>();
+
+  // Should throw with "Circular dependency" message
+  ASSERT_THROW(container.resolve<CircularA>(), std::runtime_error);
+}
+
+// Test resolve after clear throws
+TEST_F(DIContainerTest, ResolveAfterClear)
+{
+  container.register_component<DependencyA>();
+  auto a = container.resolve<DependencyA>();
+  ASSERT_NE(a, nullptr);
+
+  container.clear();
+
+  // After clear, resolve should throw since component is no longer registered
+  ASSERT_THROW(container.resolve<DependencyA>(), std::runtime_error);
+}
