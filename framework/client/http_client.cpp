@@ -228,6 +228,7 @@ namespace khttpd::framework::client
 
   void HttpClient::set_base_url(const std::string& url)
   {
+    host_pool_.reset(); // Clear pool, revert to single host
     auto result = boost::urls::parse_uri(url);
     if (result.has_value())
     {
@@ -242,6 +243,24 @@ namespace khttpd::framework::client
         if (res2.has_value()) base_url_ = res2.value();
       }
     }
+  }
+
+  void HttpClient::set_base_url_pool(const std::vector<HostEntry>& hosts)
+  {
+    if (hosts.empty())
+    {
+      host_pool_.reset();
+      return;
+    }
+    if (hosts.size() == 1)
+    {
+      // Single host: fall back to set_base_url for simplicity
+      set_base_url(hosts[0].url);
+      host_pool_.reset();
+      return;
+    }
+    host_pool_ = std::make_unique<HostPool>(hosts);
+    base_url_.reset(); // Clear single host URL
   }
 
   void HttpClient::set_default_header(const std::string& key, const std::string& value)
@@ -264,7 +283,27 @@ namespace khttpd::framework::client
   {
     boost::urls::url u;
 
-    if (base_url_.has_value())
+    // Use host pool if available (multi-host), otherwise use single base_url_
+    if (host_pool_)
+    {
+      const std::string& host_url = host_pool_->pick();
+      auto pool_res = boost::urls::parse_uri(host_url);
+      if (pool_res.has_value())
+      {
+        u = pool_res.value();
+      }
+      else
+      {
+        auto fallback = boost::urls::parse_uri("http://" + host_url);
+        if (fallback.has_value()) u = fallback.value();
+      }
+      if (!path_in.empty())
+      {
+        if (path_in.front() != '/') u.set_path(u.path() + "/" + path_in);
+        else u.set_path(path_in);
+      }
+    }
+    else if (base_url_.has_value())
     {
       u = base_url_.value();
       if (!path_in.empty())

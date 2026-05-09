@@ -20,6 +20,8 @@
 #include <type_traits>
 #include <optional>
 
+#include "client/host_pool.hpp"
+
 namespace khttpd::framework::client
 {
   namespace beast = boost::beast;
@@ -66,6 +68,19 @@ namespace khttpd::framework::client
   // Helper: Replace function
   std::string replace_all(std::string str, const std::string& from, const std::string& to);
 
+  // Verb conversion helper
+  inline http::verb verb_from_string(const std::string& s)
+  {
+    if (s == "GET" || s == "get") return http::verb::get;
+    if (s == "POST" || s == "post") return http::verb::post;
+    if (s == "PUT" || s == "put") return http::verb::put;
+    if (s == "DELETE" || s == "delete") return http::verb::delete_;
+    if (s == "PATCH" || s == "patch") return http::verb::patch;
+    if (s == "HEAD" || s == "head") return http::verb::head;
+    if (s == "OPTIONS" || s == "options") return http::verb::options;
+    return http::verb::get;
+  }
+
   class HttpClient : public std::enable_shared_from_this<HttpClient>
   {
   public:
@@ -85,6 +100,7 @@ namespace khttpd::framework::client
 
     // Configuration
     void set_base_url(const std::string& url);
+    void set_base_url_pool(const std::vector<HostEntry>& hosts);
     void set_default_header(const std::string& key, const std::string& value);
     void set_bearer_token(const std::string& token);
     void set_timeout(std::chrono::seconds seconds);
@@ -123,12 +139,13 @@ namespace khttpd::framework::client
     ssl::context* ssl_ctx_ptr_; // Points to the active context
 
     std::optional<boost::urls::url> base_url_;
+    std::unique_ptr<HostPool> host_pool_; // Multi-host support (null if single host)
     std::map<std::string, std::string> default_headers_;
     std::chrono::seconds timeout_{30};
   };
 }
 
-// Include macros at the end
+// Include legacy macros (backward compatibility)
 #include "macros.hpp"
 
 #endif // KHTTPD_FRAMEWORK_CLIENT_HTTP_CLIENT_HPP

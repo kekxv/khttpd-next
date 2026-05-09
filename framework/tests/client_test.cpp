@@ -1,5 +1,7 @@
 #include "framework/client/http_client.hpp"
 #include "framework/client/websocket_client.hpp"
+#include "framework/client/api_macros.hpp"
+#include "framework/client/host_pool.hpp"
 #include <gtest/gtest.h>
 #include <boost/json.hpp>
 #include <map>
@@ -414,4 +416,123 @@ TEST_F(ClientTest, ThreadPoolVerify)
 
   WAIT_FOR_ASYNC(f1);
   WAIT_FOR_ASYNC(f2);
+}
+
+// ==========================================
+// 3. Oat++-style API Client Tests
+// ==========================================
+
+// Define API client using KHTTPD_API_CLIENT (single host, endpoints use API_CALL)
+KHTTPD_API_CLIENT(EchoClient, "https://postman-echo.com")
+    API_CALL(http::verb::get, "/get", get_echo,
+             QUERY(std::string, msg, "msg"))
+    API_CALL(http::verb::post, "/post", post_echo,
+             BODY(boost::json::object, body))
+KHTTPD_API_CLIENT_END()
+
+// Define API client using KHTTPD_API_CLIENT_POOL (multi-host with weights)
+KHTTPD_API_CLIENT_POOL(MultiHostClient,
+    KHTTPD_HOST("https://postman-echo.com", 3)
+    KHTTPD_HOST("https://postman-echo.com", 1)
+)
+    API_CALL(http::verb::get, "/get", get_echo,
+             QUERY(std::string, msg, "msg"))
+KHTTPD_API_CLIENT_END()
+
+// Test verb_from_string
+TEST(ApiMacrosTest, VerbFromString)
+{
+  ASSERT_EQ(verb_from_string("GET"), http::verb::get);
+  ASSERT_EQ(verb_from_string("get"), http::verb::get);
+  ASSERT_EQ(verb_from_string("POST"), http::verb::post);
+  ASSERT_EQ(verb_from_string("post"), http::verb::post);
+  ASSERT_EQ(verb_from_string("PUT"), http::verb::put);
+  ASSERT_EQ(verb_from_string("DELETE"), http::verb::delete_);
+  ASSERT_EQ(verb_from_string("PATCH"), http::verb::patch);
+  ASSERT_EQ(verb_from_string("HEAD"), http::verb::head);
+  ASSERT_EQ(verb_from_string("OPTIONS"), http::verb::options);
+  ASSERT_EQ(verb_from_string("UNKNOWN"), http::verb::get); // fallback
+}
+
+// Test single-host KHTTPD_API_CLIENT
+TEST_F(ClientTest, OatppStyleSingleHost)
+{
+  auto echo = std::make_shared<EchoClient>();
+  echo->set_timeout(std::chrono::seconds(10));
+
+  std::promise<void> done;
+  auto future = done.get_future();
+
+  echo->get_echo("hello", [&](auto ec, auto res) {
+    if (!ec) {
+      EXPECT_EQ(res.result(), http::status::ok);
+      EXPECT_TRUE(res.body().find("hello") != std::string::npos);
+    } else {
+      ADD_FAILURE() << "Network error: " << ec.message();
+    }
+    done.set_value();
+  });
+
+  WAIT_FOR_ASYNC(future);
+}
+
+// Test sync version
+TEST_F(ClientTest, OatppStyleSync)
+{
+  auto echo = std::make_shared<EchoClient>();
+  echo->set_timeout(std::chrono::seconds(10));
+
+  try {
+    auto res = echo->get_echo_sync("sync_test");
+    EXPECT_EQ(res.result(), http::status::ok);
+    EXPECT_TRUE(res.body().find("sync_test") != std::string::npos);
+  } catch (const std::exception& e) {
+    ADD_FAILURE() << "Exception: " << e.what();
+  }
+}
+
+// Test multi-host pool
+TEST(ApiMacrosTest, HostPoolWeighted)
+{
+  std::vector<HostEntry> hosts = {
+    {"http://host-a.com", 3},
+    {"http://host-b.com", 1},
+  };
+  HostPool pool(hosts);
+
+  // All URLs should be present
+  auto urls = pool.all_urls();
+  ASSERT_EQ(urls.size(), 2);
+  ASSERT_EQ(urls[0], "http://host-a.com");
+  ASSERT_EQ(urls[1], "http://host-b.com");
+
+  // Total weight should be 4
+  ASSERT_EQ(pool.total_weight(), 4);
+
+  // pick() should always return one of the hosts
+  for (int i = 0; i < 100; ++i) {
+    const auto& picked = pool.pick();
+    ASSERT_TRUE(picked == "http://host-a.com" || picked == "http://host-b.com");
+  }
+}
+
+// Test multi-host API client
+TEST_F(ClientTest, MultiHostClientPool)
+{
+  auto mc = std::make_shared<MultiHostClient>();
+  mc->set_timeout(std::chrono::seconds(10));
+
+  std::promise<void> done;
+  auto future = done.get_future();
+
+  mc->get_echo("pool_test", [&](auto ec, auto res) {
+    if (!ec) {
+      EXPECT_EQ(res.result(), http::status::ok);
+    } else {
+      ADD_FAILURE() << "Network error: " << ec.message();
+    }
+    done.set_value();
+  });
+
+  WAIT_FOR_ASYNC(future);
 }
