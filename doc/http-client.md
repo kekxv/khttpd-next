@@ -123,6 +123,52 @@ gh->get_repo("octocat", "Hello-World", [](auto ec, auto res) {
 | `HEADER(Type, Name, Key)` | 自定义请求头 | `HEADER(std::string, token, "Authorization")` |
 | `BODY(Type, Name)` | 请求体（自动序列化为 JSON） | `BODY(boost::json::object, data)` |
 
+### Oat++ 风格 API 定义
+
+使用 `KHTTPD_API_CLIENT` 或 `KHTTPD_API_CLIENT_POOL` 宏以类 Oat++ 的声明式风格定义客户端：
+
+```cpp
+// 单 host 客户端
+KHTTPD_API_CLIENT(GitHubClient, "https://api.github.com")
+    API_CALL(http::verb::get, "/users/:login", get_user,
+             PATH(std::string, login, "login"))
+    API_CALL(http::verb::get, "/users/:login/repos", list_repos,
+             PATH(std::string, login, "login"),
+             QUERY(int, page, "page"))
+KHTTPD_API_CLIENT_END()
+```
+
+在类体内部可以直接使用 `API_CALL` 宏，自动生成：
+- `get_user(login, callback)` — 异步方法
+- `get_user_sync(login)` — 同步方法
+
+### 多 Host + 权重分发
+
+使用 `KHTTPD_API_CLIENT_POOL` 定义多 host 客户端，请求按权重分配到不同后端：
+
+```cpp
+KHTTPD_API_CLIENT_POOL(GitHubClient,
+    KHTTPD_HOST("https://api.github.com", 3)         // 权重 3 (60%)
+    KHTTPD_HOST("https://api-backup.github.com", 2)  // 权重 2 (40%)
+)
+    API_CALL(http::verb::get, "/users/:login", get_user,
+             PATH(std::string, login, "login"))
+KHTTPD_API_CLIENT_END()
+```
+
+每次请求时，客户端会按权重随机选择一个 host 发起请求。
+
+### 宏参考
+
+| 宏 | 说明 |
+|----|------|
+| `KHTTPD_API_CLIENT(Name, Host)` | 定义继承自 `HttpClient` 的类，自动设置单 host 基础 URL |
+| `KHTTPD_API_CLIENT_POOL(Name, ...)` | 定义继承自 `HttpClient` 的类，使用多 host 池 + 权重分发 |
+| `KHTTPD_HOST(Url, Weight)` | Host 池配置项，指定 URL 和权重 |
+| `KHTTPD_API_CLIENT_END()` | 结束类定义 |
+| `API_CALL(METHOD, PATH, NAME, ...)` | 在类体内使用，生成异步 + 同步 API 方法 |
+| `verb_from_string("GET")` | 将字符串转换为 `http::verb` 枚举值 |
+
 ---
 
 ## WebSocket 客户端

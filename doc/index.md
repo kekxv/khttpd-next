@@ -50,6 +50,8 @@
 
 ### 客户端
 - HTTP 客户端 → [HTTP 客户端](http-client.md#http-客户端)
+- Oat++ 风格 API 定义 → [HTTP 客户端](http-client.md#oat-风格-api-定义)
+- 多 Host 权重分发 → [HTTP 客户端](http-client.md#多-host-权重分发)
 - API_CALL 宏 → [HTTP 客户端](http-client.md#api_call-宏自动生成客户端方法)
 - WebSocket 客户端 → [HTTP 客户端](http-client.md#websocket-客户端)
 

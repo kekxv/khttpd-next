@@ -15,6 +15,7 @@ and [Boost.Asio](https://www.boost.org/doc/libs/release/libs/asio/), managed wit
 - **Controller Pattern** — CRTP-based `BaseController` with `KHTTPD_ROUTE` / `KHTTPD_WSROUTE` macros for clean route
   definitions
 - **HTTP Client** — Sync & async HTTP client with SSL, bearer token, base URL, and JSON body serialization
+- **Oat++-style API Client** — Declarative API definition with `KHTTPD_API_CLIENT`, multi-host support with weight-based routing
 - **WebSocket Client** — Async WebSocket client counterpart
 - **Interceptors** — Pre-request / post-response middleware pipeline
 - **Exception Handling** — Type-safe exception dispatcher with per-type handlers
@@ -256,6 +257,32 @@ client->request(http::verb::get, "/users", {}, {}, {},
 
 // Sync
 auto res = client->request_sync(http::verb::post, "/data", {}, "{\"key\":\"val\"}", {});
+```
+
+### Oat++-style API Client
+
+```cpp
+#include "framework/client/api_macros.hpp"
+
+// 单 host
+KHTTPD_API_CLIENT(GitHubClient, "https://api.github.com")
+    API_CALL(http::verb::get, "/users/:login", get_user,
+             PATH(std::string, login, "login"))
+KHTTPD_API_CLIENT_END()
+
+// 多 host + 权重分发
+KHTTPD_API_CLIENT_POOL(GitHubClient,
+    KHTTPD_HOST("https://api.github.com", 3)
+    KHTTPD_HOST("https://api-backup.github.com", 1)
+)
+    API_CALL(http::verb::get, "/users/:login", get_user,
+             PATH(std::string, login, "login"))
+KHTTPD_API_CLIENT_END()
+
+// 使用
+auto gh = std::make_shared<GitHubClient>();
+auto res = gh->get_user_sync("octocat");      // 同步
+gh->get_user("octocat", [](auto ec, auto res) { /* 异步 */ });
 ```
 
 ### Dependency Injection
