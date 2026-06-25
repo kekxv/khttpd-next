@@ -9,3 +9,4 @@ node_modules
 /.clwb/aspects/
 .clwb
 web_root
+MODULE.bazel.lock

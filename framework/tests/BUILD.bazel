@@ -25,6 +25,7 @@ cc_test(
     ],
     deps = [
         "//framework",
+        "@spdlog//:spdlog",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
     ],
@@ -113,6 +114,44 @@ cc_test(
         "-Wall",
         "-pedantic",
     ],
+    deps = [
+        "//framework",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "session_test",
+    srcs = ["session_test.cpp"],
+    copts = [
+        "-std=c++17",
+        "-Wall",
+        "-pedantic",
+    ],
+    deps = [
+        "//framework",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "server_stability_test",
+    srcs = ["server_stability_test.cpp"],
+    copts = select({
+        "@platforms//os:windows": [
+            "/std:c++17",
+            "/wd4865",
+            "/wd5026",
+            "/wd5039",
+        ],
+        "//conditions:default": [
+            "-std=c++17",
+            "-Wall",
+            "-pedantic",
+        ],
+    }),
     deps = [
         "//framework",
         "@googletest//:gtest",

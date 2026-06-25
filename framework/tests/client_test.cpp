@@ -4,14 +4,267 @@
 #include "framework/client/host_pool.hpp"
 #include <gtest/gtest.h>
 #include <boost/json.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/beast/websocket.hpp>
 #include <map>
 #include <thread>
-#include <iostream>
+#include <atomic>
+#include <array>
+#include <sstream>
+#include <mutex>
+#include <vector>
+#include <memory>
+#include <spdlog/spdlog.h>
 
 #include "io_context_pool.hpp"
 
 using namespace khttpd::framework::client;
 namespace http = boost::beast::http;
+namespace beast = boost::beast;
+namespace websocket = boost::beast::websocket;
+namespace net = boost::asio;
+using tcp = boost::asio::ip::tcp;
+
+namespace
+{
+class ClientTestLogger : public ::testing::EmptyTestEventListener
+{
+public:
+  void OnTestStart(const ::testing::TestInfo& test_info) override
+  {
+    spdlog::info("[client_test] START {}.{}", test_info.test_suite_name(), test_info.name());
+  }
+
+  void OnTestEnd(const ::testing::TestInfo& test_info) override
+  {
+    spdlog::info("[client_test] END {}.{} result={}", test_info.test_suite_name(), test_info.name(),
+                 test_info.result()->Passed() ? "PASS" : "FAIL");
+  }
+};
+
+class ClientTestLoggerEnvironment : public ::testing::Environment
+{
+public:
+  void SetUp() override
+  {
+    spdlog::set_level(spdlog::level::info);
+    ::testing::UnitTest::GetInstance()->listeners().Append(new ClientTestLogger());
+    spdlog::info("[client_test] logger installed");
+  }
+};
+
+const auto* const kClientTestLoggerEnvironment =
+  ::testing::AddGlobalTestEnvironment(new ClientTestLoggerEnvironment());
+
+class LocalHttpEchoServer
+{
+public:
+  LocalHttpEchoServer()
+    : acceptor_(ioc_, tcp::endpoint(net::ip::address_v4::loopback(), 0)),
+      port_(acceptor_.local_endpoint().port())
+  {
+    do_accept();
+    thread_ = std::thread([this]() { ioc_.run(); });
+  }
+
+  ~LocalHttpEchoServer()
+  {
+    spdlog::info("[client_test] LocalHttpEchoServer stopping");
+    boost::system::error_code ignored;
+    acceptor_.close(ignored);
+    ioc_.stop();
+    if (thread_.joinable()) thread_.join();
+    std::vector<std::thread> workers;
+    {
+      std::lock_guard<std::mutex> lock(workers_mutex_);
+      workers.swap(workers_);
+    }
+    for (auto& worker : workers)
+    {
+      if (worker.joinable()) worker.join();
+    }
+    spdlog::info("[client_test] LocalHttpEchoServer stopped");
+  }
+
+  std::string base_url() const
+  {
+    return "http://127.0.0.1:" + std::to_string(port_);
+  }
+
+private:
+  void do_accept()
+  {
+    acceptor_.async_accept([this](boost::system::error_code ec, tcp::socket socket)
+    {
+      if (!ec)
+      {
+        std::lock_guard<std::mutex> lock(workers_mutex_);
+        workers_.emplace_back([socket = std::move(socket)]() mutable
+        {
+          handle_session(std::move(socket));
+        });
+      }
+
+      if (acceptor_.is_open())
+      {
+        do_accept();
+      }
+    });
+  }
+
+  static std::string query_value(std::string target, const std::string& key)
+  {
+    const auto query_pos = target.find('?');
+    if (query_pos == std::string::npos) return "";
+    std::string query = target.substr(query_pos + 1);
+    std::istringstream parts(query);
+    std::string item;
+    while (std::getline(parts, item, '&'))
+    {
+      const auto eq_pos = item.find('=');
+      if (eq_pos != std::string::npos && item.substr(0, eq_pos) == key)
+      {
+        return item.substr(eq_pos + 1);
+      }
+    }
+    return "";
+  }
+
+  static void handle_session(tcp::socket socket)
+  {
+    beast::flat_buffer buffer;
+    boost::system::error_code ec;
+    http::request<http::string_body> req;
+    http::read(socket, buffer, req, ec);
+    if (ec) return;
+
+    http::response<http::string_body> res{http::status::ok, req.version()};
+    res.set(http::field::server, "khttpd-local-echo");
+    res.set(http::field::content_type, "application/json");
+    res.keep_alive(false);
+
+    const std::string target(req.target());
+    if (target.rfind("/get", 0) == 0)
+    {
+      res.body() = "{\"foo\":\"" + query_value(target, "foo") + "\",\"id\":\"" +
+        query_value(target, "id") + "\",\"msg\":\"" + query_value(target, "msg") + "\"}";
+    }
+    else if (target.rfind("/headers", 0) == 0)
+    {
+      std::string body = "{";
+      for (const auto& field : req)
+      {
+        body += "\"" + std::string(field.name_string()) + "\":\"" + std::string(field.value()) + "\",";
+      }
+      body += "\"done\":true}";
+      res.body() = std::move(body);
+    }
+    else if (target.rfind("/post", 0) == 0)
+    {
+      res.body() = "{\"data\":" + req.body() + "}";
+    }
+    else
+    {
+      res.body() = "{\"target\":\"" + target + "\"}";
+    }
+
+    res.prepare_payload();
+    http::write(socket, res, ec);
+    socket.shutdown(tcp::socket::shutdown_both, ec);
+  }
+
+  net::io_context ioc_;
+  tcp::acceptor acceptor_;
+  unsigned short port_;
+  std::thread thread_;
+  std::mutex workers_mutex_;
+  std::vector<std::thread> workers_;
+};
+
+class LocalWebSocketEchoServer
+{
+public:
+  LocalWebSocketEchoServer()
+    : acceptor_(ioc_, tcp::endpoint(net::ip::address_v4::loopback(), 0)),
+      port_(acceptor_.local_endpoint().port())
+  {
+    do_accept();
+    thread_ = std::thread([this]() { ioc_.run(); });
+  }
+
+  ~LocalWebSocketEchoServer()
+  {
+    spdlog::info("[client_test] LocalWebSocketEchoServer stopping");
+    net::post(ioc_, [this]()
+    {
+      boost::system::error_code ignored;
+      acceptor_.close(ignored);
+      if (ws_)
+      {
+        beast::get_lowest_layer(*ws_).cancel(ignored);
+        beast::get_lowest_layer(*ws_).close(ignored);
+      }
+      ioc_.stop();
+    });
+    if (thread_.joinable()) thread_.join();
+    spdlog::info("[client_test] LocalWebSocketEchoServer stopped");
+  }
+
+  std::string url() const
+  {
+    return "ws://127.0.0.1:" + std::to_string(port_);
+  }
+
+private:
+  void do_accept()
+  {
+    acceptor_.async_accept([this](boost::system::error_code ec, tcp::socket socket)
+    {
+      if (ec) return;
+
+      ws_ = std::make_shared<websocket::stream<tcp::socket>>(std::move(socket));
+      ws_->async_accept([this, ws = ws_](boost::system::error_code accept_ec)
+      {
+        if (accept_ec) return;
+        do_read(ws, 0);
+      });
+    });
+  }
+
+  void do_read(std::shared_ptr<websocket::stream<tcp::socket>> ws, int count)
+  {
+    if (count >= 5)
+    {
+      ws->async_close(websocket::close_code::normal, [](boost::system::error_code) {});
+      return;
+    }
+
+    auto buffer = std::make_shared<beast::flat_buffer>();
+    ws->async_read(*buffer, [this, ws, buffer, count](boost::system::error_code ec, std::size_t)
+    {
+      if (ec) return;
+      ws->text(ws->got_text());
+      ws->async_write(buffer->data(), [this, ws, count](boost::system::error_code write_ec, std::size_t)
+      {
+        if (write_ec) return;
+        do_read(ws, count + 1);
+      });
+    });
+  }
+
+  net::io_context ioc_;
+  tcp::acceptor acceptor_;
+  unsigned short port_;
+  std::thread thread_;
+  std::shared_ptr<websocket::stream<tcp::socket>> ws_;
+};
+
+LocalHttpEchoServer& local_http_echo_server()
+{
+  static LocalHttpEchoServer server;
+  return server;
+}
+}
 
 // ==========================================
 // 1. 定义 PostmanEchoClient 类
@@ -22,7 +275,7 @@ public:
   // 构造函数：注入 ioc，并设置默认 Base URL
   PostmanEchoClient()
   {
-    set_base_url("https://postman-echo.com");
+    set_base_url(local_http_echo_server().base_url());
     // 设置一个较长的超时时间，防止 CI 环境网络慢
     set_timeout(std::chrono::seconds(10));
   }
@@ -275,6 +528,81 @@ TEST(EasyModeTest, AsyncRequest)
   future.wait();
 }
 
+TEST(HttpClientLocalTest, SyncRequestWithUnrunExternalIoContextTimesOut)
+{
+  boost::asio::io_context ioc;
+  HttpClient client(ioc);
+  client.set_base_url("http://127.0.0.1:9");
+  client.set_timeout(std::chrono::seconds(0));
+
+  auto start = std::chrono::steady_clock::now();
+  EXPECT_THROW(
+    client.request_sync(http::verb::get, "/", {}, "", {}),
+    boost::system::system_error);
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_LT(elapsed, std::chrono::seconds(2));
+}
+
+TEST(HttpClientLocalTest, SyncRequestTimeoutClosesStalledConnection)
+{
+  boost::asio::io_context server_ioc;
+  tcp::acceptor acceptor(server_ioc, {boost::asio::ip::make_address("127.0.0.1"), 0});
+  const auto endpoint = acceptor.local_endpoint();
+  std::atomic<bool> accepted{false};
+  std::atomic<bool> client_closed{false};
+  auto server_socket = std::make_shared<tcp::socket>(server_ioc);
+  auto read_buffer = std::make_shared<std::array<char, 1024>>();
+  auto read_until_close = std::make_shared<std::function<void()>>();
+  *read_until_close = [server_socket, read_buffer, read_until_close, &client_closed]()
+  {
+    server_socket->async_read_some(boost::asio::buffer(*read_buffer),
+                                   [read_until_close, &client_closed](boost::system::error_code read_ec,
+                                                                      std::size_t)
+                                   {
+                                     if (read_ec)
+                                     {
+                                       client_closed = true;
+                                       return;
+                                     }
+                                     (*read_until_close)();
+                                   });
+  };
+
+  acceptor.async_accept(*server_socket, [&](boost::system::error_code ec)
+  {
+    ASSERT_FALSE(ec) << ec.message();
+    accepted = true;
+    (*read_until_close)();
+  });
+
+  std::thread server_thread([&] { server_ioc.run(); });
+
+  boost::asio::io_context client_ioc;
+  auto work = boost::asio::make_work_guard(client_ioc);
+  std::thread client_thread([&] { client_ioc.run(); });
+
+  HttpClient client(client_ioc);
+  client.set_base_url("http://127.0.0.1:" + std::to_string(endpoint.port()));
+  client.set_timeout(std::chrono::seconds(1));
+
+  EXPECT_THROW(client.request_sync(http::verb::get, "/", {}, "", {}), boost::system::system_error);
+
+  for (int i = 0; i < 100 && (!accepted || !client_closed); ++i)
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+
+  work.reset();
+  client_ioc.stop();
+  server_ioc.stop();
+  if (client_thread.joinable()) client_thread.join();
+  if (server_thread.joinable()) server_thread.join();
+
+  EXPECT_TRUE(accepted);
+  EXPECT_TRUE(client_closed);
+}
+
 
 // ==========================================
 // WebSocket 测试
@@ -299,7 +627,8 @@ protected:
 
 TEST_F(WebsocketTest, WssEchoAndWriteQueue)
 {
-  std::string url = "wss://echo.websocket.org";
+  LocalWebSocketEchoServer server;
+  std::string url = server.url();
 
   const int message_count = 5;
   int received_count = 0;
@@ -317,7 +646,7 @@ TEST_F(WebsocketTest, WssEchoAndWriteQueue)
     if (msg.find("Request served by") != std::string::npos) return;
 
     received_count++;
-    // std::cout << "Msg: " << msg << std::endl;
+    // spdlog::debug("Msg: {}", msg);
 
     if (received_count >= message_count)
     {
@@ -337,7 +666,7 @@ TEST_F(WebsocketTest, WssEchoAndWriteQueue)
     // 忽略操作取消（通常是 close() 导致的 pending read 取消）
     if (ec == boost::asio::error::operation_aborted) return;
 
-    std::cerr << "WS Error: " << ec.message() << std::endl;
+    spdlog::error("WS Error: {}", ec.message());
     has_error = true;
     timer.cancel(); // 发生错误也停止测试
   });
@@ -393,9 +722,66 @@ TEST_F(WebsocketTest, ConnectFailure)
   EXPECT_TRUE(failed);
 }
 
+TEST_F(WebsocketTest, CloseBeforeHandshakeSuppressesConnectCallback)
+{
+  boost::asio::io_context server_ioc;
+  tcp::acceptor acceptor(server_ioc, {boost::asio::ip::make_address("127.0.0.1"), 0});
+  const auto endpoint = acceptor.local_endpoint();
+  auto server_socket = std::make_shared<tcp::socket>(server_ioc);
+
+  acceptor.async_accept(*server_socket, [](boost::system::error_code) {});
+  std::thread server_thread([&] { server_ioc.run(); });
+
+  std::atomic<int> connect_calls{0};
+  ws_client->connect("ws://127.0.0.1:" + std::to_string(endpoint.port()), [&](boost::beast::error_code)
+  {
+    ++connect_calls;
+  });
+  ws_client->close();
+
+  boost::asio::steady_timer timer(ioc, std::chrono::milliseconds(300));
+  timer.async_wait([&](boost::system::error_code) { ioc.stop(); });
+  ioc.run();
+
+  server_ioc.stop();
+  if (server_thread.joinable()) server_thread.join();
+
+  EXPECT_EQ(connect_calls.load(), 0);
+}
+
+TEST(WebsocketClientLifecycleTest, DestructorSuppressesPendingConnectCallback)
+{
+  boost::asio::io_context server_ioc;
+  tcp::acceptor acceptor(server_ioc, {boost::asio::ip::make_address("127.0.0.1"), 0});
+  const auto endpoint = acceptor.local_endpoint();
+  auto server_socket = std::make_shared<tcp::socket>(server_ioc);
+
+  acceptor.async_accept(*server_socket, [](boost::system::error_code) {});
+  std::thread server_thread([&] { server_ioc.run(); });
+
+  boost::asio::io_context client_ioc;
+  std::atomic<int> connect_calls{0};
+  {
+    auto client = std::make_shared<WebsocketClient>(client_ioc);
+    client->connect("ws://127.0.0.1:" + std::to_string(endpoint.port()), [&](boost::beast::error_code)
+    {
+      ++connect_calls;
+    });
+  }
+
+  boost::asio::steady_timer timer(client_ioc, std::chrono::milliseconds(300));
+  timer.async_wait([&](boost::system::error_code) { client_ioc.stop(); });
+  client_ioc.run();
+
+  server_ioc.stop();
+  if (server_thread.joinable()) server_thread.join();
+
+  EXPECT_EQ(connect_calls.load(), 0);
+}
+
 TEST_F(ClientTest, ThreadPoolVerify)
 {
-  std::cout << "Pool Size: " << khttpd::framework::IoContextPool::instance().get_thread_count() << std::endl;
+  spdlog::debug("Pool Size: {}", khttpd::framework::IoContextPool::instance().get_thread_count());
 
   std::promise<void> p1, p2;
   auto f1 = p1.get_future();
@@ -404,13 +790,13 @@ TEST_F(ClientTest, ThreadPoolVerify)
   // 发起两个请求
   client->echo_get("A", 1, [&](auto, auto)
   {
-    std::cout << "Req 1 processed on thread: " << std::this_thread::get_id() << std::endl;
+    spdlog::debug("Req 1 processed on thread hash: {}", std::hash<std::thread::id>{}(std::this_thread::get_id()));
     p1.set_value();
   });
 
   client->echo_get("B", 2, [&](auto, auto)
   {
-    std::cout << "Req 2 processed on thread: " << std::this_thread::get_id() << std::endl;
+    spdlog::debug("Req 2 processed on thread hash: {}", std::hash<std::thread::id>{}(std::this_thread::get_id()));
     p2.set_value();
   });
 
@@ -423,7 +809,7 @@ TEST_F(ClientTest, ThreadPoolVerify)
 // ==========================================
 
 // Define API client using KHTTPD_API_CLIENT (single host, endpoints use API_CALL)
-KHTTPD_API_CLIENT(EchoClient, "https://postman-echo.com")
+KHTTPD_API_CLIENT(EchoClient, "http://127.0.0.1:1")
     API_CALL(http::verb::get, "/get", get_echo,
              QUERY(std::string, msg, "msg"))
     API_CALL(http::verb::post, "/post", post_echo,
@@ -432,8 +818,8 @@ KHTTPD_API_CLIENT_END()
 
 // Define API client using KHTTPD_API_CLIENT_POOL (multi-host with weights)
 KHTTPD_API_CLIENT_POOL(MultiHostClient,
-    KHTTPD_HOST("https://postman-echo.com", 3)
-    KHTTPD_HOST("https://postman-echo.com", 1)
+    KHTTPD_HOST("http://127.0.0.1:1", 3)
+    KHTTPD_HOST("http://127.0.0.1:1", 1)
 )
     API_CALL(http::verb::get, "/get", get_echo,
              QUERY(std::string, msg, "msg"))
@@ -458,6 +844,7 @@ TEST(ApiMacrosTest, VerbFromString)
 TEST_F(ClientTest, OatppStyleSingleHost)
 {
   auto echo = std::make_shared<EchoClient>();
+  echo->set_base_url(local_http_echo_server().base_url());
   echo->set_timeout(std::chrono::seconds(10));
 
   std::promise<void> done;
@@ -480,6 +867,7 @@ TEST_F(ClientTest, OatppStyleSingleHost)
 TEST_F(ClientTest, OatppStyleSync)
 {
   auto echo = std::make_shared<EchoClient>();
+  echo->set_base_url(local_http_echo_server().base_url());
   echo->set_timeout(std::chrono::seconds(10));
 
   try {
@@ -516,10 +904,42 @@ TEST(ApiMacrosTest, HostPoolWeighted)
   }
 }
 
+TEST(ApiMacrosTest, HostPoolPickIsThreadSafe)
+{
+  std::vector<HostEntry> hosts = {
+    {"http://host-a.com", 3},
+    {"http://host-b.com", 1},
+  };
+  HostPool pool(hosts);
+  std::atomic<int> picks{0};
+  std::vector<std::thread> threads;
+
+  for (int t = 0; t < 8; ++t)
+  {
+    threads.emplace_back([&]()
+    {
+      for (int i = 0; i < 1000; ++i)
+      {
+        const auto& picked = pool.pick();
+        ASSERT_TRUE(picked == "http://host-a.com" || picked == "http://host-b.com");
+        picks++;
+      }
+    });
+  }
+
+  for (auto& thread : threads)
+  {
+    thread.join();
+  }
+
+  ASSERT_EQ(picks.load(), 8000);
+}
+
 // Test multi-host API client
 TEST_F(ClientTest, MultiHostClientPool)
 {
   auto mc = std::make_shared<MultiHostClient>();
+  mc->set_base_url(local_http_echo_server().base_url());
   mc->set_timeout(std::chrono::seconds(10));
 
   std::promise<void> done;

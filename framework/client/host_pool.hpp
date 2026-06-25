@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <random>
+#include <mutex>
 
 namespace khttpd::framework::client
 {
@@ -34,6 +35,7 @@ namespace khttpd::framework::client
     std::vector<int> cumulative_weights_;
     int total_weight_;
     std::mt19937 rng_;
+    std::mutex rng_mutex_;
   };
 }
 

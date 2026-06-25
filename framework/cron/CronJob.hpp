@@ -4,11 +4,11 @@
 #include <string>
 #include <functional>
 #include <memory>
-#include <iostream>
 #include <ctime>
 #include <atomic>
 #include <chrono>
 #include <boost/asio.hpp>
+#include <spdlog/spdlog.h>
 #include "croncpp.hpp"
 #include "io_context_pool.hpp"
 
@@ -28,7 +28,7 @@ namespace khttpd::framework
       }
       catch (const std::exception& e)
       {
-        std::cerr << "[CronJob] Invalid expression '" << expression << "': " << e.what() << std::endl;
+        spdlog::error("[CronJob] Invalid expression '{}': {}", expression, e.what());
         throw;
       }
     }
@@ -99,7 +99,7 @@ namespace khttpd::framework
 
         if (ec)
         {
-          std::cerr << "[CronJob] Timer error: " << ec.message() << std::endl;
+          spdlog::error("[CronJob] Timer error: {}", ec.message());
           return;
         }
 
@@ -109,7 +109,7 @@ namespace khttpd::framework
         }
         catch (const std::exception& e)
         {
-          std::cerr << "[CronJob] Task exception: " << e.what() << std::endl;
+          spdlog::error("[CronJob] Task exception: {}", e.what());
         }
 
         if (is_running_)

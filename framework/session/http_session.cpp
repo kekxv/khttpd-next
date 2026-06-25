@@ -2,12 +2,29 @@
 
 #include "context/http_context.hpp"
 #include <fmt/core.h>
-#include <condition_variable>
+#include <spdlog/spdlog.h>
 #include <sstream>
+#include <thread>
 #include <utility>
 
 
 using namespace khttpd::framework;
+
+struct HttpSession::ChunkWriteState
+{
+  std::queue<std::string> queue;
+  std::mutex mutex;
+  bool writing = false;
+  bool final_queued = false;
+  bool completed = false;
+  beast::error_code error;
+  net::executor_work_guard<beast::tcp_stream::executor_type> guard;
+
+  explicit ChunkWriteState(beast::tcp_stream::executor_type executor)
+    : guard(executor)
+  {
+  }
+};
 
 HttpSession::HttpSession(tcp::socket&& socket, HttpRouter& router, WebsocketRouter& ws_router,
                          const std::string& web_root,
@@ -47,13 +64,13 @@ void HttpSession::on_read(const beast::error_code& ec, std::size_t bytes_transfe
   }
   if (ec)
   {
-    fmt::print(stderr, "HttpSession on_read error: {}\n", ec.message());
+    spdlog::error("HttpSession on_read error: {}", ec.message());
     return;
   }
 
   if (beast::websocket::is_upgrade(req_))
   {
-    fmt::print("Detected WebSocket upgrade request for target: {}\n", req_.target());
+    spdlog::debug("Detected WebSocket upgrade request for target: {}", std::string(req_.target()));
     handle_websocket_upgrade();
     return;
   }
@@ -121,14 +138,34 @@ void HttpSession::handle_request()
 }
 
 // Extract path from request target (query-stripped)
-static std::string extract_path_from_target(std::string_view target)
+namespace
 {
-  auto qpos = target.find('?');
-  if (qpos != std::string_view::npos)
+  std::string extract_path_from_target(std::string_view target)
   {
-    return std::string(target.substr(0, qpos));
+    auto qpos = target.find('?');
+    if (qpos != std::string_view::npos)
+    {
+      return std::string(target.substr(0, qpos));
+    }
+    return std::string(target);
   }
-  return std::string(target);
+
+  bool is_path_within_root(const boost::filesystem::path& candidate,
+                           const boost::filesystem::path& root)
+  {
+    auto root_it = root.begin();
+    auto candidate_it = candidate.begin();
+
+    for (; root_it != root.end(); ++root_it, ++candidate_it)
+    {
+      if (candidate_it == candidate.end() || *root_it != *candidate_it)
+      {
+        return false;
+      }
+    }
+
+    return true;
+  }
 }
 
 bool HttpSession::do_serve_static_file()
@@ -158,7 +195,7 @@ bool HttpSession::do_serve_static_file()
     {
       return false;
     }
-    fmt::print(stderr, "Error canonicalizing path '{}': {}\n", full_local_path.string(), ec.message());
+    spdlog::error("Error canonicalizing path '{}': {}", full_local_path.string(), ec.message());
     http::response<http::string_body> forbidden_res{http::status::forbidden, req_.version()};
     forbidden_res.keep_alive(req_.keep_alive());
     forbidden_res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
@@ -170,10 +207,7 @@ bool HttpSession::do_serve_static_file()
   }
 
   // 2. Security: ensure path is within web root
-  const std::string& full_path_str = full_local_path.string();
-  const std::string& root_path_str = canonical_web_root_path_.string();
-  if (full_path_str.size() < root_path_str.size() ||
-      full_path_str.substr(0, root_path_str.size()) != root_path_str)
+  if (!is_path_within_root(full_local_path, canonical_web_root_path_))
   {
     http::response<http::string_body> forbidden_res{http::status::forbidden, req_.version()};
     forbidden_res.keep_alive(req_.keep_alive());
@@ -190,7 +224,7 @@ bool HttpSession::do_serve_static_file()
   {
     if (ec)
     {
-      fmt::print(stderr, "Error checking if path is directory '{}': {}\n", full_local_path.string(), ec.message());
+      spdlog::error("Error checking if path is directory '{}': {}", full_local_path.string(), ec.message());
       return false;
     }
     boost::filesystem::path index_file_path = full_local_path / "index.html";
@@ -227,7 +261,7 @@ bool HttpSession::do_serve_static_file()
   file_res.body().open(full_local_path.string().c_str(), beast::file_mode::scan, ec);
   if (ec)
   {
-    fmt::print(stderr, "Error opening file {}: {}\n", full_local_path.string(), ec.message());
+    spdlog::error("Error opening file {}: {}", full_local_path.string(), ec.message());
     http::response<http::string_body> internal_error_res{http::status::internal_server_error, req_.version()};
     internal_error_res.keep_alive(req_.keep_alive());
     internal_error_res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
@@ -244,6 +278,17 @@ bool HttpSession::do_serve_static_file()
 
   file_res.prepare_payload();
 
+  if (req_.method() == http::verb::head)
+  {
+    http::response<http::empty_body> head_res{http::status::ok, req_.version()};
+    head_res.keep_alive(req_.keep_alive());
+    head_res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
+    head_res.set(http::field::content_type, mime_type_from_extension(extension));
+    head_res.content_length(file_res.body().size());
+    send_response(std::move(head_res));
+    return true;
+  }
+
   send_response(std::move(file_res));
   return true;
 }
@@ -252,12 +297,6 @@ void HttpSession::send_chunked_response()
 {
   res_.body() = "";
   sr_.emplace(res_);
-
-  // Initialize chunked writing state
-  chunk_queue_ = std::make_shared<std::queue<std::string>>();
-  chunk_mtx_ = std::make_shared<std::mutex>();
-  chunk_writing_ = std::make_shared<bool>(false);
-  chunk_error_ = std::make_shared<beast::error_code>();
 
   http::async_write_header(stream_, *sr_,
                            beast::bind_front_handler(
@@ -277,62 +316,107 @@ void HttpSession::on_write_header(beast::error_code ec, std::size_t bytes_transf
   boost::ignore_unused(bytes_transferred);
   if (ec)
   {
-    fmt::print(stderr, "HttpSession on_write_header error: {}\n", ec.message());
+    spdlog::error("HttpSession on_write_header error: {}", ec.message());
     return;
   }
 
-  // Async chunk writer: posts each chunk write to the io_context executor.
-  // The WriteHandler synchronously waits for the async write to complete
-  // so the user's HttpStreamHandler can use a simple synchronous loop.
-  auto write_chunk = [this](const std::string& buffer) -> bool
-  {
-    struct WriteState
-    {
-      std::mutex mtx;
-      std::condition_variable cv;
-      beast::error_code ec;
-      bool done = false;
-    };
-    auto state = std::make_shared<WriteState>();
+  // The stream handler may run blocking user code, while writes are serialized
+  // back onto the stream executor to preserve Beast's async_write contract.
+  auto self = shared_from_this();
+  auto state = std::make_shared<ChunkWriteState>(stream_.get_executor());
 
-    // Build chunk: hex-length \r\n body \r\n
+  auto schedule_write = [self, state]()
+  {
+    bool should_start = false;
+    {
+      std::unique_lock<std::mutex> lock{state->mutex};
+      if (!state->writing)
+      {
+        state->writing = true;
+        should_start = true;
+      }
+    }
+    if (should_start)
+    {
+      net::post(self->stream_.get_executor(), [self, state]()
+      {
+        self->do_write_chunk(state);
+      });
+    }
+  };
+
+  auto write_chunk = [state, schedule_write](const std::string& buffer) -> bool
+  {
     std::stringstream ss;
     ss << std::hex << buffer.length() << "\r\n" << buffer << "\r\n";
-    auto data = std::make_shared<std::string>(ss.str());
 
-    // Post async write to executor
-    net::post(stream_.get_executor(),
-              [self = shared_from_this(), data, state]()
-              {
-                net::async_write(self->stream_, net::buffer(*data),
-                                 [state](beast::error_code ec, std::size_t)
-                                 {
-                                   std::unique_lock<std::mutex> lock{state->mtx};
-                                   state->ec = ec;
-                                   state->done = true;
-                                   state->cv.notify_one();
-                                 });
-              });
-
-    // Wait for async write to complete
-    std::unique_lock<std::mutex> lock{state->mtx};
-    state->cv.wait(lock, [&state] { return state->done; });
-
-    if (state->ec)
     {
-      fmt::print(stderr, "Chunked write error: {}\n", state->ec.message());
-      return false;
+      std::unique_lock<std::mutex> lock{state->mutex};
+      if (state->error)
+      {
+        return false;
+      }
+      state->queue.push(ss.str());
     }
+    schedule_write();
     return true;
   };
 
-  // Invoke the user's stream handler with our async-backed WriteHandler
-  if (ctx->get_stream_handler())
+  std::thread([self, state, write_chunk, schedule_write]()
   {
-    ctx->get_stream_handler()(*ctx, write_chunk);
+    if (self->ctx->get_stream_handler())
+    {
+      self->ctx->get_stream_handler()(*self->ctx, write_chunk);
+    }
+
+    {
+      std::unique_lock<std::mutex> lock{state->mutex};
+      state->queue.push("0\r\n\r\n");
+      state->final_queued = true;
+    }
+    schedule_write();
+  }).detach();
+}
+
+void HttpSession::do_write_chunk(std::shared_ptr<ChunkWriteState> state)
+{
+  std::shared_ptr<std::string> data;
+  {
+    std::unique_lock<std::mutex> lock{state->mutex};
+    if (state->queue.empty())
+    {
+      state->writing = false;
+      if (state->final_queued && !state->completed)
+      {
+        state->completed = true;
+        lock.unlock();
+        state->guard.reset();
+        on_write(res_.keep_alive(), {}, 0);
+      }
+      return;
+    }
+
+    data = std::make_shared<std::string>(std::move(state->queue.front()));
+    state->queue.pop();
   }
 
-  do_write_final_chunk();
+  net::async_write(stream_, net::buffer(*data),
+                   [self = shared_from_this(), state, data](beast::error_code ec, std::size_t bytes)
+                   {
+                     if (ec)
+                     {
+                       {
+                         std::unique_lock<std::mutex> lock{state->mutex};
+                         state->error = ec;
+                         state->writing = false;
+                         state->completed = true;
+                       }
+                       state->guard.reset();
+                       self->on_write(self->res_.keep_alive(), ec, bytes);
+                       return;
+                     }
+                     self->do_write_chunk(state);
+                   });
 }
 
 void HttpSession::do_write_final_chunk()
@@ -354,7 +438,7 @@ void HttpSession::on_write(bool keep_alive, beast::error_code ec, std::size_t by
 
   if (ec)
   {
-    fmt::print(stderr, "HttpSession on_write error: {}\n", ec.message());
+    spdlog::error("HttpSession on_write error: {}", ec.message());
     return;
   }
 
@@ -372,7 +456,7 @@ void HttpSession::do_close()
   stream_.socket().shutdown(tcp::socket::shutdown_send, ec);
   if (ec)
   {
-    fmt::print(stderr, "HttpSession shutdown error: {}\n", ec.message());
+    spdlog::error("HttpSession shutdown error: {}", ec.message());
   }
 }
 

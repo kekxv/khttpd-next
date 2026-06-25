@@ -1,9 +1,11 @@
 // framework/context/http_context.cpp
 #include "http_context.hpp"
 #include <fmt/core.h>
+#include <spdlog/spdlog.h>
 #include <algorithm> // for std::remove_if
 #include <iomanip>   // for std::quoted (not directly used here, but useful for debugging)
 #include <regex>
+#include <string_view>
 #include <boost/beast/version.hpp>
 #include <boost/url/parse.hpp>
 
@@ -79,10 +81,8 @@ namespace khttpd::framework
     else
     {
       cached_path_ = std::string(req_.target());
-      fmt::print(
-        stderr,
-        "Warning: Failed to parse request target '{}' as relative-ref: {}. Query parameters may not be available.\n",
-        req_.target(), url_result.error().message());
+      spdlog::warn("Failed to parse request target '{}' as relative-ref: {}. Query parameters may not be available.",
+                   std::string(req_.target()), url_result.error().message());
     }
     url_parsed_ = true;
   }
@@ -165,12 +165,12 @@ namespace khttpd::framework
     }
     catch (const boost::system::system_error& e)
     {
-      fmt::print(stderr, "Error parsing JSON body: {}\n", e.what());
+      spdlog::warn("Error parsing JSON body: {}", e.what());
       return std::nullopt;
     }
     catch (const std::exception& e)
     {
-      fmt::print(stderr, "Unexpected error parsing JSON body: {}\n", e.what());
+      spdlog::warn("Unexpected error parsing JSON body: {}", e.what());
       return std::nullopt;
     }
   }
@@ -199,7 +199,7 @@ namespace khttpd::framework
     }
     else
     {
-      fmt::print(stderr, "Error parsing x-www-form-urlencoded body: {}\n", url_query_result.error().message());
+      spdlog::warn("Error parsing x-www-form-urlencoded body: {}", url_query_result.error().message());
     }
     form_params_parsed_ = true;
   }
@@ -233,12 +233,16 @@ namespace khttpd::framework
     size_t boundary_pos = content_type_header->find("boundary=");
     if (boundary_pos == std::string::npos)
     {
-      fmt::print(stderr, "Multipart/form-data: No boundary found in Content-Type header.\n");
+      spdlog::warn("Multipart/form-data: No boundary found in Content-Type header.");
       multipart_parsed_ = true;
       return;
     }
     std::string boundary = content_type_header->substr(boundary_pos + std::string("boundary=").length());
-    boundary = trim(boundary); // Trim potential quotes or whitespace
+    boundary = trim(boundary);
+    if (boundary.length() >= 2 && boundary.front() == '"' && boundary.back() == '"')
+    {
+      boundary = boundary.substr(1, boundary.length() - 2);
+    }
 
     std::string full_boundary = "--" + boundary;
     std::string final_boundary = full_boundary + "--";
@@ -250,7 +254,7 @@ namespace khttpd::framework
     current_body_pos = body_str.find(full_boundary);
     if (current_body_pos == std::string::npos)
     {
-      fmt::print(stderr, "Multipart/form-data: First boundary not found.\n");
+      spdlog::warn("Multipart/form-data: First boundary not found.");
       multipart_parsed_ = true;
       return;
     }
@@ -263,7 +267,7 @@ namespace khttpd::framework
       size_t header_end_pos = body_str.find("\r\n\r\n", current_body_pos);
       if (header_end_pos == std::string::npos)
       {
-        fmt::print(stderr, "Multipart/form-data: Malformed part - no header end found.\n");
+        spdlog::warn("Multipart/form-data: Malformed part - no header end found.");
         break;
       }
 
@@ -274,27 +278,22 @@ namespace khttpd::framework
         part_headers = part_headers.substr(2);
       }
 
-      // Find start of next boundary (or final boundary)
-      size_t next_boundary_pos = body_str.find(full_boundary, header_end_pos + 4); // +4 for \r\n\r\n
-      if (next_boundary_pos == std::string::npos)
+      const size_t data_start = header_end_pos + 4;
+      size_t boundary_marker_pos = body_str.find("\r\n" + full_boundary, data_start);
+      if (boundary_marker_pos == std::string::npos)
       {
-        fmt::print(stderr, "Multipart/form-data: Next boundary not found. Malformed or premature end.\n");
+        spdlog::warn("Multipart/form-data: Next boundary not found. Malformed or premature end.");
         break; // Malformed or end of stream
       }
+      const size_t next_boundary_pos = boundary_marker_pos + 2;
 
-      std::string part_data = body_str.substr(header_end_pos + 4, next_boundary_pos - (header_end_pos + 4));
-      // Trim trailing \r\n from data before boundary
-      if (part_data.length() >= 2 && part_data[part_data.length() - 2] == '\r' && part_data[part_data.length() - 1] ==
-        '\n')
-      {
-        part_data = part_data.substr(0, part_data.length() - 2);
-      }
+      std::string part_data = body_str.substr(data_start, boundary_marker_pos - data_start);
 
       // Parse Content-Disposition
       std::string content_disposition = extract_header_value(part_headers, "Content-Disposition");
       if (content_disposition.empty())
       {
-        fmt::print(stderr, "Multipart/form-data: Part with no Content-Disposition header.\n");
+        spdlog::warn("Multipart/form-data: Part with no Content-Disposition header.");
         current_body_pos = next_boundary_pos + full_boundary.length();
         continue;
       }
@@ -432,13 +431,13 @@ namespace khttpd::framework
         key.find('\r') != std::string::npos || key.find('\n') != std::string::npos ||
         key.find('=') != std::string::npos)
     {
-      fmt::print(stderr, "Warning: Invalid cookie key '{}' - contains prohibited characters\n", key);
+      spdlog::warn("Invalid cookie key '{}' - contains prohibited characters", key);
       return;
     }
     if (value.find(';') != std::string::npos || value.find(',') != std::string::npos ||
         value.find('\r') != std::string::npos || value.find('\n') != std::string::npos)
     {
-      fmt::print(stderr, "Warning: Invalid cookie value '{}' - contains prohibited characters\n", value);
+      spdlog::warn("Invalid cookie value '{}' - contains prohibited characters", value);
       return;
     }
 

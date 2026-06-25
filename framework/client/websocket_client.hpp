@@ -29,6 +29,8 @@ namespace khttpd::framework::client
   class WebsocketClient : public std::enable_shared_from_this<WebsocketClient>
   {
   public:
+    struct State;
+
     using ConnectCallback = std::function<void(beast::error_code)>;
     using MessageHandler = std::function<void(const std::string&)>;
     using ErrorHandler = std::function<void(beast::error_code)>;
@@ -63,10 +65,7 @@ namespace khttpd::framework::client
     std::shared_ptr<ssl::context> own_ssl_ctx_;
     ssl::context* ssl_ctx_ptr_;
 
-    // Callbacks
-    MessageHandler on_message_;
-    ErrorHandler on_error_;
-    CloseHandler on_close_;
+    std::shared_ptr<State> state_;
 
     // Headers to send during handshake
     std::map<std::string, std::string> headers_;

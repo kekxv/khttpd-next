@@ -99,3 +99,43 @@ TEST_F(MultipartEdgeTest, MissingBoundary)
 
   ASSERT_FALSE(ctx.get_multipart_field("any_field").has_value());
 }
+
+TEST_F(MultipartEdgeTest, QuotedBoundary)
+{
+  std::string boundary = "----QuotedBoundary";
+  std::string multipart_body =
+    "--" + boundary + "\r\n"
+    "Content-Disposition: form-data; name=\"field\"\r\n\r\n"
+    "quoted boundary works\r\n"
+    "--" + boundary + "--\r\n";
+
+  http::request<http::string_body> req = make_request(http::verb::post, "/form", 11, multipart_body);
+  req.set(http::field::content_type, "multipart/form-data; boundary=\"" + boundary + "\"");
+  http::response<http::string_body> res;
+  khttpd_fw::HttpContext ctx(req, res);
+
+  ASSERT_TRUE(ctx.get_multipart_field("field").has_value());
+  ASSERT_EQ(ctx.get_multipart_field("field").value(), "quoted boundary works");
+}
+
+TEST_F(MultipartEdgeTest, BoundaryTextInsideFileDataIsPreserved)
+{
+  std::string boundary = "----BoundaryInData";
+  std::string file_data = "line one --" + boundary + " is not a delimiter";
+  std::string multipart_body =
+    "--" + boundary + "\r\n"
+    "Content-Disposition: form-data; name=\"file\"; filename=\"data.txt\"\r\n"
+    "Content-Type: text/plain\r\n\r\n" +
+    file_data + "\r\n"
+    "--" + boundary + "--\r\n";
+
+  http::request<http::string_body> req = make_request(http::verb::post, "/upload", 11, multipart_body);
+  req.set(http::field::content_type, "multipart/form-data; boundary=" + boundary);
+  http::response<http::string_body> res;
+  khttpd_fw::HttpContext ctx(req, res);
+
+  const auto* files = ctx.get_uploaded_files("file");
+  ASSERT_NE(files, nullptr);
+  ASSERT_EQ(files->size(), 1);
+  ASSERT_EQ(files->at(0).data, file_data);
+}

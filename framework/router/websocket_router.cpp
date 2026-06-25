@@ -1,6 +1,6 @@
 // framework/router/websocket_router.cpp
 #include "websocket_router.hpp"
-#include <fmt/core.h>
+#include <spdlog/spdlog.h>
 #include "websocket/websocket_session.hpp"
 
 namespace khttpd::framework
@@ -29,7 +29,7 @@ namespace khttpd::framework
     entry.on_close = std::move(on_close);
     entry.on_error = std::move(on_error);
     handlers_[path] = entry;
-    fmt::print("Registered WebSocket handlers for path: {}\n", path);
+    spdlog::debug("Registered WebSocket handlers for path: {}", path);
   }
 
   void WebsocketRouter::dispatch_open(const std::string& path, WebsocketContext& ctx)
@@ -37,7 +37,7 @@ namespace khttpd::framework
     const auto it = handlers_.find(path);
     if (it == handlers_.end() || !it->second.on_open)
     {
-      fmt::print(stderr, "No on_open handler found for WS path: {}\n", path);
+      spdlog::warn("No on_open handler found for WS path: {}", path);
       return;
     }
     it->second.on_open(ctx);
@@ -48,7 +48,7 @@ namespace khttpd::framework
     const auto it = handlers_.find(path);
     if (it == handlers_.end() || !it->second.on_message)
     {
-      fmt::print(stderr, "No on_message handler found for WS path: {}\n", path);
+      spdlog::warn("No on_message handler found for WS path: {}", path);
       // Default behavior: if no handler, just close connection? Echo?
       // For now, nothing happens.
       return;
@@ -61,7 +61,7 @@ namespace khttpd::framework
     const auto it = handlers_.find(path);
     if (it == handlers_.end() || !it->second.on_close)
     {
-      fmt::print(stderr, "No on_close handler found for WS path: {}\n", path);
+      spdlog::warn("No on_close handler found for WS path: {}", path);
       return;
     }
     it->second.on_close(ctx);
@@ -72,7 +72,7 @@ namespace khttpd::framework
     const auto it = handlers_.find(path);
     if (it == handlers_.end() || !it->second.on_error)
     {
-      fmt::print(stderr, "No on_error handler found for WS path: {} (error: {})\n", path, ctx.error_code.message());
+      spdlog::warn("No on_error handler found for WS path: {} (error: {})", path, ctx.error_code.message());
       return;
     }
     it->second.on_error(ctx);

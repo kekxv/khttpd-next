@@ -223,7 +223,12 @@ protected:
 
   void SetUp() override
   {
-    // 每个测试开始前重置计数器等（如果需要）
+    CronScheduler::instance().stop_all();
+  }
+
+  void TearDown() override
+  {
+    CronScheduler::instance().stop_all();
   }
 };
 
@@ -328,4 +333,34 @@ TEST_F(CronSchedulerTest, InvalidExpression)
   EXPECT_THROW({
                CronScheduler::instance().schedule("invalid cron", [](){});
                }, std::exception);
+}
+
+TEST_F(CronSchedulerTest, UnscheduleStopsAndRemovesJob)
+{
+  auto counter = std::make_shared<AsyncCounter>();
+  auto job = CronScheduler::instance().schedule("* * * * * *", [counter]() { counter->tick(); });
+
+  EXPECT_EQ(CronScheduler::instance().job_count(), 1u);
+
+  CronScheduler::instance().unschedule(job);
+
+  EXPECT_FALSE(job->is_running());
+  EXPECT_EQ(CronScheduler::instance().job_count(), 0u);
+  EXPECT_TRUE(counter->ensure_no_execution_for(1200ms));
+}
+
+TEST_F(CronSchedulerTest, PruneStoppedRemovesManuallyStoppedJobs)
+{
+  auto job1 = CronScheduler::instance().schedule("* * * * * *", []() {});
+  auto job2 = CronScheduler::instance().schedule("* * * * * *", []() {});
+
+  EXPECT_EQ(CronScheduler::instance().job_count(), 2u);
+
+  job1->stop();
+  CronScheduler::instance().prune_stopped();
+
+  EXPECT_EQ(CronScheduler::instance().job_count(), 1u);
+
+  CronScheduler::instance().unschedule(job2);
+  EXPECT_EQ(CronScheduler::instance().job_count(), 0u);
 }

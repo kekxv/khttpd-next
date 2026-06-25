@@ -10,5 +10,6 @@ cc_binary(
     ],
     deps = [
         "@khttpd",
+        "@spdlog//:spdlog",
     ],
 )

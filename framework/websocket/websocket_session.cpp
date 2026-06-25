@@ -1,7 +1,7 @@
 // framework/websocket/websocket_session.cpp
 #include "websocket_session.hpp"
 #include "context/websocket_context.hpp"
-#include <fmt/core.h>
+#include <spdlog/spdlog.h>
 #include <boost/uuid/uuid_io.hpp>
 
 namespace khttpd::framework
@@ -33,11 +33,11 @@ namespace khttpd::framework
   {
     if (ec)
     {
-      fmt::print(stderr, "WebSocket handshake error for path '{}': {}\n", initial_path_, ec.message());
+      spdlog::error("WebSocket handshake error for path '{}': {}", initial_path_, ec.message());
       do_close(ec);
       return;
     }
-    fmt::print("WebSocket handshake successful for path: {}\n", initial_path_);
+    spdlog::debug("WebSocket handshake successful for path: {}", initial_path_);
 
     WebsocketContext open_ctx(shared_from_this(), initial_path_);
     {
@@ -61,13 +61,13 @@ namespace khttpd::framework
 
     if (ec == ws::error::closed)
     {
-      fmt::print("WebSocket connection for path '{}' closed by client.\n", initial_path_);
+      spdlog::debug("WebSocket connection for path '{}' closed by client.", initial_path_);
       do_close(ec);
       return;
     }
     if (ec)
     {
-      fmt::print(stderr, "WebSocket read error for path '{}': {}\n", initial_path_, ec.message());
+      spdlog::error("WebSocket read error for path '{}': {}", initial_path_, ec.message());
       do_close(ec);
       return;
     }
@@ -75,7 +75,7 @@ namespace khttpd::framework
     std::string received_message = beast::buffers_to_string(buffer_.data());
     bool is_text = ws_.got_text();
 
-    fmt::print("Received WS message on path '{}': {}\n", initial_path_, received_message);
+    spdlog::debug("Received WS message on path '{}': {}", initial_path_, received_message);
 
     buffer_.consume(buffer_.size());
 
@@ -87,20 +87,48 @@ namespace khttpd::framework
 
   void WebsocketSession::send_message(const std::string& msg, bool is_text_msg)
   {
+    auto self = shared_from_this();
     auto ss = std::make_shared<const std::string>(msg);
-    write_queue_.emplace(ss, is_text_msg);
-    if (!writing_)
+    net::post(ws_.get_executor(), [self, ss, is_text_msg]()
     {
-      writing_ = true;
-      do_write_next();
-    }
+      if (self->closed_)
+      {
+        return;
+      }
+      self->write_queue_.emplace(ss, is_text_msg);
+      if (!self->writing_)
+      {
+        self->writing_ = true;
+        self->do_write_next();
+      }
+    });
   }
 
   void WebsocketSession::do_write_next()
   {
+    if (closed_)
+    {
+      while (!write_queue_.empty())
+      {
+        write_queue_.pop();
+      }
+      writing_ = false;
+      if (close_pending_)
+      {
+        close_pending_ = false;
+        close_stream();
+      }
+      return;
+    }
+
     if (write_queue_.empty())
     {
       writing_ = false;
+      if (close_pending_)
+      {
+        close_pending_ = false;
+        close_stream();
+      }
       return;
     }
 
@@ -176,14 +204,48 @@ namespace khttpd::framework
 
     if (ec)
     {
-      fmt::print(stderr, "WebSocket write error for path '{}': {}\n", initial_path_, ec.message());
+      spdlog::error("WebSocket write error for path '{}': {}", initial_path_, ec.message());
+      writing_ = false;
       do_close(ec);
       return;
     }
+    do_write_next();
+  }
+
+  void WebsocketSession::close_stream()
+  {
+    if (!ws_.is_open())
+    {
+      return;
+    }
+    ws_.async_close(ws::close_code::normal,
+                    [self = shared_from_this()](beast::error_code close_ec)
+                    {
+                      if (close_ec && close_ec != boost::asio::error::operation_aborted)
+                      {
+                        spdlog::error("WebSocket close error for path '{}': {}",
+                                      self->initial_path_, close_ec.message());
+                      }
+                    });
   }
 
   void WebsocketSession::do_close(beast::error_code ec)
   {
+    if (closed_)
+    {
+      return;
+    }
+    closed_ = true;
+    while (!write_queue_.empty())
+    {
+      write_queue_.pop();
+    }
+
+    {
+      std::unique_lock<std::mutex> lock{m_sessions_mutex};
+      m_sessions_id_.erase(id);
+    }
+
     if (ec && ec != ws::error::closed && ec != boost::asio::error::eof)
     {
       WebsocketContext error_ctx(shared_from_this(), initial_path_, ec);
@@ -192,18 +254,14 @@ namespace khttpd::framework
     else
     {
       WebsocketContext close_ctx(shared_from_this(), initial_path_, ec);
-      {
-        std::unique_lock<std::mutex> lock{m_sessions_mutex};
-        m_sessions_id_.erase(id);
-      }
       websocket_router_.dispatch_close(initial_path_, close_ctx);
     }
-    // Close the WebSocket stream to properly release the TCP connection
-    beast::error_code close_ec;
-    ws_.close(ws::close_code::normal, close_ec);
-    if (close_ec && close_ec != boost::asio::error::operation_aborted)
+
+    if (writing_)
     {
-      fmt::print(stderr, "WebSocket close error for path '{}': {}\n", initial_path_, close_ec.message());
+      close_pending_ = true;
+      return;
     }
+    close_stream();
   }
 }
