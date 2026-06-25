@@ -31,7 +31,8 @@ public:
     : acceptor_(ioc_, tcp::endpoint(net::ip::address_v4::loopback(), 0)),
       port_(acceptor_.local_endpoint().port())
   {
-    thread_ = std::thread([this]() { accept_loop(); });
+    do_accept();
+    thread_ = std::thread([this]() { ioc_.run(); });
   }
 
   ~LocalHttpEchoServer()
@@ -48,20 +49,23 @@ public:
   }
 
 private:
-  void accept_loop()
+  void do_accept()
   {
-    for (;;)
+    acceptor_.async_accept([this](boost::system::error_code ec, tcp::socket socket)
     {
-      boost::system::error_code ec;
-      tcp::socket socket(ioc_);
-      acceptor_.accept(socket, ec);
-      if (ec) return;
-
-      std::thread([socket = std::move(socket)]() mutable
+      if (!ec)
       {
-        handle_session(std::move(socket));
-      }).detach();
-    }
+        std::thread([socket = std::move(socket)]() mutable
+        {
+          handle_session(std::move(socket));
+        }).detach();
+      }
+
+      if (acceptor_.is_open())
+      {
+        do_accept();
+      }
+    });
   }
 
   static std::string query_value(std::string target, const std::string& key)
