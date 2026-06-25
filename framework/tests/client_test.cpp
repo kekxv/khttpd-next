@@ -13,6 +13,7 @@
 #include <sstream>
 #include <mutex>
 #include <vector>
+#include <memory>
 #include <spdlog/spdlog.h>
 
 #include "io_context_pool.hpp"
@@ -185,17 +186,26 @@ class LocalWebSocketEchoServer
 public:
   LocalWebSocketEchoServer()
     : acceptor_(ioc_, tcp::endpoint(net::ip::address_v4::loopback(), 0)),
-      port_(acceptor_.local_endpoint().port()),
-      thread_([this]() { run(); })
+      port_(acceptor_.local_endpoint().port())
   {
+    do_accept();
+    thread_ = std::thread([this]() { ioc_.run(); });
   }
 
   ~LocalWebSocketEchoServer()
   {
     spdlog::info("[client_test] LocalWebSocketEchoServer stopping");
-    boost::system::error_code ignored;
-    acceptor_.close(ignored);
-    ioc_.stop();
+    net::post(ioc_, [this]()
+    {
+      boost::system::error_code ignored;
+      acceptor_.close(ignored);
+      if (ws_)
+      {
+        beast::get_lowest_layer(*ws_).cancel(ignored);
+        beast::get_lowest_layer(*ws_).close(ignored);
+      }
+      ioc_.stop();
+    });
     if (thread_.joinable()) thread_.join();
     spdlog::info("[client_test] LocalWebSocketEchoServer stopped");
   }
@@ -206,33 +216,47 @@ public:
   }
 
 private:
-  void run()
+  void do_accept()
   {
-    boost::system::error_code ec;
-    tcp::socket socket(ioc_);
-    acceptor_.accept(socket, ec);
-    if (ec) return;
-
-    websocket::stream<tcp::socket> ws(std::move(socket));
-    ws.accept(ec);
-    if (ec) return;
-
-    for (int i = 0; i < 5; ++i)
+    acceptor_.async_accept([this](boost::system::error_code ec, tcp::socket socket)
     {
-      beast::flat_buffer buffer;
-      ws.read(buffer, ec);
-      if (ec) break;
-      ws.text(ws.got_text());
-      ws.write(buffer.data(), ec);
-      if (ec) break;
+      if (ec) return;
+
+      ws_ = std::make_shared<websocket::stream<tcp::socket>>(std::move(socket));
+      ws_->async_accept([this, ws = ws_](boost::system::error_code accept_ec)
+      {
+        if (accept_ec) return;
+        do_read(ws, 0);
+      });
+    });
+  }
+
+  void do_read(std::shared_ptr<websocket::stream<tcp::socket>> ws, int count)
+  {
+    if (count >= 5)
+    {
+      ws->async_close(websocket::close_code::normal, [](boost::system::error_code) {});
+      return;
     }
-    ws.close(websocket::close_code::normal, ec);
+
+    auto buffer = std::make_shared<beast::flat_buffer>();
+    ws->async_read(*buffer, [this, ws, buffer, count](boost::system::error_code ec, std::size_t)
+    {
+      if (ec) return;
+      ws->text(ws->got_text());
+      ws->async_write(buffer->data(), [this, ws, count](boost::system::error_code write_ec, std::size_t)
+      {
+        if (write_ec) return;
+        do_read(ws, count + 1);
+      });
+    });
   }
 
   net::io_context ioc_;
   tcp::acceptor acceptor_;
   unsigned short port_;
   std::thread thread_;
+  std::shared_ptr<websocket::stream<tcp::socket>> ws_;
 };
 
 LocalHttpEchoServer& local_http_echo_server()
