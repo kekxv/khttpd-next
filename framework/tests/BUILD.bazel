@@ -139,11 +139,19 @@ cc_test(
 cc_test(
     name = "server_stability_test",
     srcs = ["server_stability_test.cpp"],
-    copts = [
-        "-std=c++17",
-        "-Wall",
-        "-pedantic",
-    ],
+    copts = select({
+        "@platforms//os:windows": [
+            "/std:c++17",
+            "/wd4865",
+            "/wd5026",
+            "/wd5039",
+        ],
+        "//conditions:default": [
+            "-std=c++17",
+            "-Wall",
+            "-pedantic",
+        ],
+    }),
     deps = [
         "//framework",
         "@googletest//:gtest",

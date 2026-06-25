@@ -6,6 +6,7 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/filesystem.hpp>
+#include <boost/system/error_code.hpp>
 #include <atomic>
 #include <chrono>
 #include <fstream>
@@ -44,10 +45,9 @@ namespace
     try
     {
       net::io_context ioc;
-      tcp::resolver resolver(ioc);
       beast::tcp_stream stream(ioc);
       stream.expires_after(std::chrono::seconds(5));
-      stream.connect(resolver.resolve("127.0.0.1", std::to_string(port)));
+      stream.connect(tcp::endpoint(net::ip::address_v4::loopback(), port));
 
       http::request<http::string_body> req{http::verb::get, "/ping?id=" + std::to_string(request_id), 11};
       req.set(http::field::host, "127.0.0.1");
@@ -76,7 +76,7 @@ TEST(ServerStabilityTest, HandlesManyConcurrentRequests)
 {
   TempWebRoot web_root;
   auto server = std::make_shared<khttpd_fw::Server>(
-    tcp::endpoint{net::ip::make_address("127.0.0.1"), 0},
+    tcp::endpoint(tcp::v4(), 0),
     web_root.path.string(),
     4);
 
