@@ -6,6 +6,7 @@
 #include <memory>
 #include <vector>
 #include <mutex>
+#include <algorithm>
 
 namespace khttpd::framework
 {
@@ -62,13 +63,56 @@ namespace khttpd::framework
       auto job = std::make_shared<LambdaCronJob>(expression, std::move(task));
       job->start(delay_ms);
 
-      // 这里的 job 即使出了作用域，也会因为 CronJob 内部 async_wait 捕获了 shared_from_this 而存活。
-      // 返回它只是为了让调用者有控制权。
+      {
+        std::lock_guard<std::mutex> lock{mtx_};
+        jobs_.push_back(job);
+      }
       return job;
+    }
+
+    void stop_all()
+    {
+      std::vector<std::shared_ptr<CronJob>> jobs;
+      {
+        std::lock_guard<std::mutex> lock{mtx_};
+        jobs.swap(jobs_);
+      }
+      for (const auto& job : jobs)
+      {
+        job->stop();
+      }
+    }
+
+    void unschedule(const std::shared_ptr<CronJob>& job)
+    {
+      if (!job) return;
+      job->stop();
+
+      std::lock_guard<std::mutex> lock{mtx_};
+      jobs_.erase(std::remove(jobs_.begin(), jobs_.end(), job), jobs_.end());
+    }
+
+    void prune_stopped()
+    {
+      std::lock_guard<std::mutex> lock{mtx_};
+      jobs_.erase(std::remove_if(jobs_.begin(), jobs_.end(),
+                                 [](const std::shared_ptr<CronJob>& job)
+                                 {
+                                   return !job || !job->is_running();
+                                 }),
+                  jobs_.end());
+    }
+
+    std::size_t job_count() const
+    {
+      std::lock_guard<std::mutex> lock{mtx_};
+      return jobs_.size();
     }
 
   private:
     CronScheduler() = default;
+    mutable std::mutex mtx_;
+    std::vector<std::shared_ptr<CronJob>> jobs_;
   };
 }
 

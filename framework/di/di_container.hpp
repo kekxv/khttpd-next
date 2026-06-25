@@ -97,6 +97,7 @@ namespace khttpd
         catch (...)
         {
           // Clean up resolving set on exception
+          lock.lock();
           resolving_.erase(type_idx);
           throw;
         }

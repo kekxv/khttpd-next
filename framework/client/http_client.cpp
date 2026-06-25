@@ -30,6 +30,7 @@ namespace khttpd::framework::client
     http::response<http::string_body> res_;
     beast::flat_buffer buffer_;
     std::chrono::seconds timeout_;
+    std::atomic<bool> completed_{false};
 
   public:
     Session(HttpClient::ResponseCallback callback, std::chrono::seconds timeout)
@@ -39,12 +40,22 @@ namespace khttpd::framework::client
 
     virtual ~Session() = default;
     virtual void run(const std::string& host, const std::string& port, http::request<http::string_body> req) = 0;
+    virtual void cancel() = 0;
 
   protected:
+    void complete(beast::error_code ec, http::response<http::string_body> res)
+    {
+      if (!completed_.exchange(true) && callback_)
+      {
+        callback_(ec, std::move(res));
+      }
+    }
+
     void on_fail(beast::error_code ec, const char* what)
     {
       // Log if needed: std::cerr << what << ": " << ec.message() << "\n";
-      if (callback_) callback_(ec, {});
+      boost::ignore_unused(what);
+      complete(ec, {});
     }
   };
 
@@ -74,6 +85,18 @@ namespace khttpd::framework::client
       stream_.expires_after(timeout_);
       resolver_.async_resolve(host, port,
                               beast::bind_front_handler(&HttpSession::on_resolve, get_shared()));
+    }
+
+    void cancel() override
+    {
+      net::post(stream_.get_executor(), [self = get_shared()]()
+      {
+        beast::error_code ignored;
+        self->resolver_.cancel();
+        self->stream_.cancel();
+        self->stream_.socket().shutdown(tcp::socket::shutdown_both, ignored);
+        self->stream_.socket().close(ignored);
+      });
     }
 
     void on_resolve(beast::error_code ec, tcp::resolver::results_type results)
@@ -107,7 +130,7 @@ namespace khttpd::framework::client
       if (ec) return on_fail(ec, "read");
 
       stream_.socket().shutdown(tcp::socket::shutdown_both, ec);
-      if (callback_) callback_(ec, std::move(res_));
+      complete(ec, std::move(res_));
     }
   };
 
@@ -143,6 +166,18 @@ namespace khttpd::framework::client
       stream_.next_layer().expires_after(timeout_);
       resolver_.async_resolve(host, port,
                               beast::bind_front_handler(&HttpsSession::on_resolve, get_shared()));
+    }
+
+    void cancel() override
+    {
+      net::post(stream_.get_executor(), [self = get_shared()]()
+      {
+        beast::error_code ignored;
+        self->resolver_.cancel();
+        beast::get_lowest_layer(self->stream_).cancel();
+        beast::get_lowest_layer(self->stream_).socket().shutdown(tcp::socket::shutdown_both, ignored);
+        beast::get_lowest_layer(self->stream_).socket().close(ignored);
+      });
     }
 
     void on_resolve(beast::error_code ec, tcp::resolver::results_type results)
@@ -185,7 +220,7 @@ namespace khttpd::framework::client
       {
         if ((ec == ssl::error::stream_truncated || ec == net::error::eof) && res_.result_int() != 0)
         {
-          if (callback_) callback_({}, std::move(res_));
+          complete({}, std::move(res_));
           return;
         }
         return on_fail(ec, "read");
@@ -198,7 +233,7 @@ namespace khttpd::framework::client
     {
       if (ec == net::error::eof || ec == ssl::error::stream_truncated)
         ec = {};
-      if (callback_) callback_(ec, std::move(res_));
+      complete(ec, std::move(res_));
     }
   };
 
@@ -404,19 +439,62 @@ namespace khttpd::framework::client
     auto p = std::make_shared<std::promise<std::pair<beast::error_code, http::response<http::string_body>>>>();
     auto completed = std::make_shared<std::atomic<bool>>(false);
     auto f = p->get_future();
+    std::shared_ptr<Session> session;
 
-    this->request(method, path, query_params, body, headers,
-                  [p, completed](beast::error_code ec, http::response<http::string_body> res)
-                  {
-                    if (!completed->exchange(true))
-                    {
-                      p->set_value({ec, std::move(res)});
-                    }
-                  });
+    try
+    {
+      auto parts = parse_target(path, query_params);
+
+      http::request<http::string_body> req{method, parts.target, 11};
+      req.set(http::field::host, parts.host);
+      req.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
+
+      for (const auto& h : default_headers_) req.set(h.first, h.second);
+      for (const auto& h : headers) req.set(h.first, h.second);
+
+      if (!body.empty())
+      {
+        req.body() = body;
+        req.prepare_payload();
+      }
+
+      auto callback = [p, completed](beast::error_code ec, http::response<http::string_body> res)
+      {
+        if (!completed->exchange(true))
+        {
+          p->set_value({ec, std::move(res)});
+        }
+      };
+
+      if (parts.scheme == "https")
+      {
+        if (!ssl_ctx_ptr_)
+        {
+          throw boost::system::system_error(
+            beast::error_code(beast::errc::operation_not_supported, beast::system_category()));
+        }
+        session = std::make_shared<HttpsSession>(ioc_, *ssl_ctx_ptr_, std::move(callback), timeout_);
+      }
+      else
+      {
+        session = std::make_shared<HttpSession>(ioc_, std::move(callback), timeout_);
+      }
+      session->run(parts.host, parts.port, std::move(req));
+    }
+    catch (const boost::system::system_error&)
+    {
+      throw;
+    }
+    catch (const std::exception&)
+    {
+      throw boost::system::system_error(
+        beast::error_code(beast::errc::invalid_argument, beast::system_category()));
+    }
 
     if (f.wait_for(timeout_ + std::chrono::seconds(1)) != std::future_status::ready)
     {
       completed->store(true);
+      if (session) session->cancel();
       throw boost::system::system_error(beast::error_code(beast::errc::timed_out, beast::system_category()));
     }
     auto result = f.get();

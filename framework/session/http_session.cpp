@@ -2,13 +2,28 @@
 
 #include "context/http_context.hpp"
 #include <fmt/core.h>
-#include <functional>
 #include <sstream>
 #include <thread>
 #include <utility>
 
 
 using namespace khttpd::framework;
+
+struct HttpSession::ChunkWriteState
+{
+  std::queue<std::string> queue;
+  std::mutex mutex;
+  bool writing = false;
+  bool final_queued = false;
+  bool completed = false;
+  beast::error_code error;
+  net::executor_work_guard<beast::tcp_stream::executor_type> guard;
+
+  explicit ChunkWriteState(beast::tcp_stream::executor_type executor)
+    : guard(executor)
+  {
+  }
+};
 
 HttpSession::HttpSession(tcp::socket&& socket, HttpRouter& router, WebsocketRouter& ws_router,
                          const std::string& web_root,
@@ -282,12 +297,6 @@ void HttpSession::send_chunked_response()
   res_.body() = "";
   sr_.emplace(res_);
 
-  // Initialize chunked writing state
-  chunk_queue_ = std::make_shared<std::queue<std::string>>();
-  chunk_mtx_ = std::make_shared<std::mutex>();
-  chunk_writing_ = std::make_shared<bool>(false);
-  chunk_error_ = std::make_shared<beast::error_code>();
-
   http::async_write_header(stream_, *sr_,
                            beast::bind_front_handler(
                              &HttpSession::on_write_header,
@@ -313,93 +322,46 @@ void HttpSession::on_write_header(beast::error_code ec, std::size_t bytes_transf
   // The stream handler may run blocking user code, while writes are serialized
   // back onto the stream executor to preserve Beast's async_write contract.
   auto self = shared_from_this();
-  auto guard = std::make_shared<net::executor_work_guard<beast::tcp_stream::executor_type>>(
-    stream_.get_executor());
-  auto final_queued = std::make_shared<bool>(false);
-  auto completed = std::make_shared<bool>(false);
-  auto write_next = std::make_shared<std::function<void()>>();
+  auto state = std::make_shared<ChunkWriteState>(stream_.get_executor());
 
-  *write_next = [self, guard, final_queued, completed, write_next]()
-  {
-    std::shared_ptr<std::string> data;
-    {
-      std::unique_lock<std::mutex> lock{*self->chunk_mtx_};
-      if (self->chunk_queue_->empty())
-      {
-        *self->chunk_writing_ = false;
-        if (*final_queued && !*completed)
-        {
-          *completed = true;
-          lock.unlock();
-          guard->reset();
-          self->on_write(self->res_.keep_alive(), {}, 0);
-          *write_next = nullptr;
-        }
-        return;
-      }
-
-      data = std::make_shared<std::string>(std::move(self->chunk_queue_->front()));
-      self->chunk_queue_->pop();
-    }
-
-    net::async_write(self->stream_, net::buffer(*data),
-                     [self, guard, completed, write_next, data](beast::error_code ec, std::size_t bytes)
-                     {
-                       if (ec)
-                       {
-                         {
-                           std::unique_lock<std::mutex> lock{*self->chunk_mtx_};
-                           *self->chunk_error_ = ec;
-                           *self->chunk_writing_ = false;
-                           *completed = true;
-                         }
-                         guard->reset();
-                         self->on_write(self->res_.keep_alive(), ec, bytes);
-                         *write_next = nullptr;
-                         return;
-                       }
-                       (*write_next)();
-                     });
-  };
-
-  auto schedule_write = [self, write_next]()
+  auto schedule_write = [self, state]()
   {
     bool should_start = false;
     {
-      std::unique_lock<std::mutex> lock{*self->chunk_mtx_};
-      if (!*self->chunk_writing_)
+      std::unique_lock<std::mutex> lock{state->mutex};
+      if (!state->writing)
       {
-        *self->chunk_writing_ = true;
+        state->writing = true;
         should_start = true;
       }
     }
     if (should_start)
     {
-      net::post(self->stream_.get_executor(), [write_next]()
+      net::post(self->stream_.get_executor(), [self, state]()
       {
-        (*write_next)();
+        self->do_write_chunk(state);
       });
     }
   };
 
-  auto write_chunk = [self, schedule_write](const std::string& buffer) -> bool
+  auto write_chunk = [state, schedule_write](const std::string& buffer) -> bool
   {
     std::stringstream ss;
     ss << std::hex << buffer.length() << "\r\n" << buffer << "\r\n";
 
     {
-      std::unique_lock<std::mutex> lock{*self->chunk_mtx_};
-      if (*self->chunk_error_)
+      std::unique_lock<std::mutex> lock{state->mutex};
+      if (state->error)
       {
         return false;
       }
-      self->chunk_queue_->push(ss.str());
+      state->queue.push(ss.str());
     }
     schedule_write();
     return true;
   };
 
-  std::thread([self, write_chunk, schedule_write, final_queued]()
+  std::thread([self, state, write_chunk, schedule_write]()
   {
     if (self->ctx->get_stream_handler())
     {
@@ -407,12 +369,53 @@ void HttpSession::on_write_header(beast::error_code ec, std::size_t bytes_transf
     }
 
     {
-      std::unique_lock<std::mutex> lock{*self->chunk_mtx_};
-      self->chunk_queue_->push("0\r\n\r\n");
-      *final_queued = true;
+      std::unique_lock<std::mutex> lock{state->mutex};
+      state->queue.push("0\r\n\r\n");
+      state->final_queued = true;
     }
     schedule_write();
   }).detach();
+}
+
+void HttpSession::do_write_chunk(std::shared_ptr<ChunkWriteState> state)
+{
+  std::shared_ptr<std::string> data;
+  {
+    std::unique_lock<std::mutex> lock{state->mutex};
+    if (state->queue.empty())
+    {
+      state->writing = false;
+      if (state->final_queued && !state->completed)
+      {
+        state->completed = true;
+        lock.unlock();
+        state->guard.reset();
+        on_write(res_.keep_alive(), {}, 0);
+      }
+      return;
+    }
+
+    data = std::make_shared<std::string>(std::move(state->queue.front()));
+    state->queue.pop();
+  }
+
+  net::async_write(stream_, net::buffer(*data),
+                   [self = shared_from_this(), state, data](beast::error_code ec, std::size_t bytes)
+                   {
+                     if (ec)
+                     {
+                       {
+                         std::unique_lock<std::mutex> lock{state->mutex};
+                         state->error = ec;
+                         state->writing = false;
+                         state->completed = true;
+                       }
+                       state->guard.reset();
+                       self->on_write(self->res_.keep_alive(), ec, bytes);
+                       return;
+                     }
+                     self->do_write_chunk(state);
+                   });
 }
 
 void HttpSession::do_write_final_chunk()

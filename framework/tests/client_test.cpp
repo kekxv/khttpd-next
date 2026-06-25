@@ -8,6 +8,7 @@
 #include <thread>
 #include <iostream>
 #include <atomic>
+#include <array>
 
 #include "io_context_pool.hpp"
 
@@ -292,6 +293,65 @@ TEST(HttpClientLocalTest, SyncRequestWithUnrunExternalIoContextTimesOut)
   EXPECT_LT(elapsed, std::chrono::seconds(2));
 }
 
+TEST(HttpClientLocalTest, SyncRequestTimeoutClosesStalledConnection)
+{
+  boost::asio::io_context server_ioc;
+  tcp::acceptor acceptor(server_ioc, {boost::asio::ip::make_address("127.0.0.1"), 0});
+  const auto endpoint = acceptor.local_endpoint();
+  std::atomic<bool> accepted{false};
+  std::atomic<bool> client_closed{false};
+  auto server_socket = std::make_shared<tcp::socket>(server_ioc);
+  auto read_buffer = std::make_shared<std::array<char, 1024>>();
+  auto read_until_close = std::make_shared<std::function<void()>>();
+  *read_until_close = [server_socket, read_buffer, read_until_close, &client_closed]()
+  {
+    server_socket->async_read_some(boost::asio::buffer(*read_buffer),
+                                   [read_until_close, &client_closed](boost::system::error_code read_ec,
+                                                                      std::size_t)
+                                   {
+                                     if (read_ec)
+                                     {
+                                       client_closed = true;
+                                       return;
+                                     }
+                                     (*read_until_close)();
+                                   });
+  };
+
+  acceptor.async_accept(*server_socket, [&](boost::system::error_code ec)
+  {
+    ASSERT_FALSE(ec) << ec.message();
+    accepted = true;
+    (*read_until_close)();
+  });
+
+  std::thread server_thread([&] { server_ioc.run(); });
+
+  boost::asio::io_context client_ioc;
+  auto work = boost::asio::make_work_guard(client_ioc);
+  std::thread client_thread([&] { client_ioc.run(); });
+
+  HttpClient client(client_ioc);
+  client.set_base_url("http://127.0.0.1:" + std::to_string(endpoint.port()));
+  client.set_timeout(std::chrono::seconds(1));
+
+  EXPECT_THROW(client.request_sync(http::verb::get, "/", {}, "", {}), boost::system::system_error);
+
+  for (int i = 0; i < 100 && (!accepted || !client_closed); ++i)
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+
+  work.reset();
+  client_ioc.stop();
+  server_ioc.stop();
+  if (client_thread.joinable()) client_thread.join();
+  if (server_thread.joinable()) server_thread.join();
+
+  EXPECT_TRUE(accepted);
+  EXPECT_TRUE(client_closed);
+}
+
 
 // ==========================================
 // WebSocket 测试
@@ -408,6 +468,63 @@ TEST_F(WebsocketTest, ConnectFailure)
 
   ioc.run();
   EXPECT_TRUE(failed);
+}
+
+TEST_F(WebsocketTest, CloseBeforeHandshakeSuppressesConnectCallback)
+{
+  boost::asio::io_context server_ioc;
+  tcp::acceptor acceptor(server_ioc, {boost::asio::ip::make_address("127.0.0.1"), 0});
+  const auto endpoint = acceptor.local_endpoint();
+  auto server_socket = std::make_shared<tcp::socket>(server_ioc);
+
+  acceptor.async_accept(*server_socket, [](boost::system::error_code) {});
+  std::thread server_thread([&] { server_ioc.run(); });
+
+  std::atomic<int> connect_calls{0};
+  ws_client->connect("ws://127.0.0.1:" + std::to_string(endpoint.port()), [&](boost::beast::error_code)
+  {
+    ++connect_calls;
+  });
+  ws_client->close();
+
+  boost::asio::steady_timer timer(ioc, std::chrono::milliseconds(300));
+  timer.async_wait([&](boost::system::error_code) { ioc.stop(); });
+  ioc.run();
+
+  server_ioc.stop();
+  if (server_thread.joinable()) server_thread.join();
+
+  EXPECT_EQ(connect_calls.load(), 0);
+}
+
+TEST(WebsocketClientLifecycleTest, DestructorSuppressesPendingConnectCallback)
+{
+  boost::asio::io_context server_ioc;
+  tcp::acceptor acceptor(server_ioc, {boost::asio::ip::make_address("127.0.0.1"), 0});
+  const auto endpoint = acceptor.local_endpoint();
+  auto server_socket = std::make_shared<tcp::socket>(server_ioc);
+
+  acceptor.async_accept(*server_socket, [](boost::system::error_code) {});
+  std::thread server_thread([&] { server_ioc.run(); });
+
+  boost::asio::io_context client_ioc;
+  std::atomic<int> connect_calls{0};
+  {
+    auto client = std::make_shared<WebsocketClient>(client_ioc);
+    client->connect("ws://127.0.0.1:" + std::to_string(endpoint.port()), [&](boost::beast::error_code)
+    {
+      ++connect_calls;
+    });
+  }
+
+  boost::asio::steady_timer timer(client_ioc, std::chrono::milliseconds(300));
+  timer.async_wait([&](boost::system::error_code) { client_ioc.stop(); });
+  client_ioc.run();
+
+  server_ioc.stop();
+  if (server_thread.joinable()) server_thread.join();
+
+  EXPECT_EQ(connect_calls.load(), 0);
 }
 
 TEST_F(ClientTest, ThreadPoolVerify)

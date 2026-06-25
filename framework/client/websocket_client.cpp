@@ -1,5 +1,6 @@
 #include "websocket_client.hpp"
 #include <iostream>
+#include <mutex>
 #include <boost/url.hpp>
 #include <boost/asio/ssl/host_name_verification.hpp>
 
@@ -7,18 +8,31 @@
 
 namespace khttpd::framework::client
 {
+  struct WebsocketClient::State
+  {
+    std::mutex mutex;
+    bool alive = true;
+    bool close_notified = false;
+    MessageHandler on_message;
+    ErrorHandler on_error;
+    CloseHandler on_close;
+  };
+
   // ==========================================
   // Internal Session Abstraction
   // ==========================================
   struct WebsocketSessionImpl : public std::enable_shared_from_this<WebsocketSessionImpl>
   {
-    WebsocketClient* owner_;
+    std::weak_ptr<WebsocketClient::State> state_;
     std::string host_;
     beast::flat_buffer buffer_;
     std::deque<std::string> write_queue_; // 写队列
     bool is_writing_ = false;
+    bool closing_ = false;
+    bool close_started_ = false;
+    bool connect_notified_ = false;
 
-    explicit WebsocketSessionImpl(WebsocketClient* owner) : owner_(owner)
+    explicit WebsocketSessionImpl(std::shared_ptr<WebsocketClient::State> state) : state_(std::move(state))
     {
     }
 
@@ -39,8 +53,63 @@ namespace khttpd::framework::client
     virtual net::any_io_executor get_executor() = 0;
     virtual void do_write_from_queue() = 0;
 
+    void notify_message(const std::string& message)
+    {
+      auto state = state_.lock();
+      if (!state) return;
+      WebsocketClient::MessageHandler handler;
+      {
+        std::lock_guard<std::mutex> lock{state->mutex};
+        if (!state->alive) return;
+        handler = state->on_message;
+      }
+      if (handler) handler(message);
+    }
+
+    void notify_error(beast::error_code ec)
+    {
+      auto state = state_.lock();
+      if (!state) return;
+      WebsocketClient::ErrorHandler handler;
+      {
+        std::lock_guard<std::mutex> lock{state->mutex};
+        if (!state->alive) return;
+        handler = state->on_error;
+      }
+      if (handler) handler(ec);
+    }
+
+    void notify_close()
+    {
+      auto state = state_.lock();
+      if (!state) return;
+      WebsocketClient::CloseHandler handler;
+      {
+        std::lock_guard<std::mutex> lock{state->mutex};
+        if (!state->alive || state->close_notified) return;
+        state->close_notified = true;
+        handler = state->on_close;
+      }
+      if (handler) handler();
+    }
+
+    void notify_connect(WebsocketClient::ConnectCallback& callback, beast::error_code ec)
+    {
+      if (connect_notified_ || closing_) return;
+      connect_notified_ = true;
+
+      auto state = state_.lock();
+      if (!state) return;
+      {
+        std::lock_guard<std::mutex> lock{state->mutex};
+        if (!state->alive) return;
+      }
+      if (callback) callback(ec);
+    }
+
     void on_queue_write(std::string message)
     {
+      if (closing_) return;
       write_queue_.push_back(std::move(message));
       if (!is_writing_)
       {
@@ -63,19 +132,16 @@ namespace khttpd::framework::client
           ec == boost::asio::error::connection_reset ||
           ec == boost::asio::error::operation_aborted)
         {
-          if (owner_->on_close_) owner_->on_close_();
+          notify_close();
         }
         else
         {
-          if (owner_->on_error_) owner_->on_error_(ec);
+          notify_error(ec);
         }
         return;
       }
 
-      if (owner_->on_message_)
-      {
-        owner_->on_message_(beast::buffers_to_string(buffer_.data()));
-      }
+      notify_message(beast::buffers_to_string(buffer_.data()));
       buffer_.consume(buffer_.size());
     }
 
@@ -85,7 +151,14 @@ namespace khttpd::framework::client
       if (ec)
       {
         is_writing_ = false; // Stop writing on error
-        if (owner_->on_error_) owner_->on_error_(ec);
+        if (ec == websocket::error::closed || ec == net::error::operation_aborted)
+        {
+          notify_close();
+        }
+        else
+        {
+          notify_error(ec);
+        }
         return;
       }
 
@@ -112,8 +185,8 @@ namespace khttpd::framework::client
     WebsocketClient::ConnectCallback connect_cb_;
 
   public:
-    PlainWebsocketSession(net::io_context& ioc, WebsocketClient* owner)
-      : WebsocketSessionImpl(owner), ws_(net::make_strand(ioc)), resolver_(ioc)
+    PlainWebsocketSession(net::io_context& ioc, std::shared_ptr<WebsocketClient::State> state)
+      : WebsocketSessionImpl(std::move(state)), ws_(net::make_strand(ioc)), resolver_(ioc)
     {
     }
 
@@ -134,13 +207,25 @@ namespace khttpd::framework::client
     {
       net::post(ws_.get_executor(), [self = std::static_pointer_cast<PlainWebsocketSession>(shared_from_this())]()
       {
-        if (self->ws_.is_open())
+        self->closing_ = true;
+        self->write_queue_.clear();
+        beast::error_code ignored;
+        self->resolver_.cancel();
+        beast::get_lowest_layer(self->ws_).cancel();
+
+        if (self->ws_.is_open() && !self->close_started_)
         {
+          self->close_started_ = true;
           self->ws_.async_close(websocket::close_code::normal, [self](beast::error_code)
           {
             /* ignore close error */
+            self->notify_close();
           });
+          return;
         }
+
+        beast::get_lowest_layer(self->ws_).socket().shutdown(tcp::socket::shutdown_both, ignored);
+        beast::get_lowest_layer(self->ws_).socket().close(ignored);
       });
     }
 
@@ -156,6 +241,7 @@ namespace khttpd::framework::client
     void on_resolve(std::string target, std::map<std::string, std::string> headers, beast::error_code ec,
                     tcp::resolver::results_type results)
     {
+      if (closing_) return;
       if (ec) return fail(ec);
       beast::get_lowest_layer(ws_).async_connect(results, beast::bind_front_handler(
                                                    &PlainWebsocketSession::on_connect,
@@ -166,6 +252,7 @@ namespace khttpd::framework::client
     void on_connect(std::string target, std::map<std::string, std::string> headers, beast::error_code ec,
                     tcp::resolver::results_type::endpoint_type)
     {
+      if (closing_) return;
       if (ec) return fail(ec);
 
       ws_.set_option(websocket::stream_base::timeout::suggested(beast::role_type::client));
@@ -185,8 +272,9 @@ namespace khttpd::framework::client
 
     void on_handshake(beast::error_code ec)
     {
+      if (closing_) return;
       if (ec) return fail(ec);
-      if (connect_cb_) connect_cb_(ec);
+      notify_connect(connect_cb_, ec);
       do_read();
     }
 
@@ -210,7 +298,7 @@ namespace khttpd::framework::client
 
     void fail(beast::error_code ec)
     {
-      if (connect_cb_) connect_cb_(ec);
+      notify_connect(connect_cb_, ec);
     }
   };
 
@@ -224,8 +312,8 @@ namespace khttpd::framework::client
     WebsocketClient::ConnectCallback connect_cb_;
 
   public:
-    SslWebsocketSession(net::io_context& ioc, ssl::context& ctx, WebsocketClient* owner)
-      : WebsocketSessionImpl(owner), ws_(net::make_strand(ioc), ctx), resolver_(ioc)
+    SslWebsocketSession(net::io_context& ioc, ssl::context& ctx, std::shared_ptr<WebsocketClient::State> state)
+      : WebsocketSessionImpl(std::move(state)), ws_(net::make_strand(ioc), ctx), resolver_(ioc)
     {
     }
 
@@ -252,12 +340,24 @@ namespace khttpd::framework::client
     {
       net::post(ws_.get_executor(), [self = std::static_pointer_cast<SslWebsocketSession>(shared_from_this())]()
       {
-        if (self->ws_.is_open())
+        self->closing_ = true;
+        self->write_queue_.clear();
+        beast::error_code ignored;
+        self->resolver_.cancel();
+        beast::get_lowest_layer(self->ws_).cancel();
+
+        if (self->ws_.is_open() && !self->close_started_)
         {
+          self->close_started_ = true;
           self->ws_.async_close(websocket::close_code::normal, [self](beast::error_code)
           {
+            self->notify_close();
           });
+          return;
         }
+
+        beast::get_lowest_layer(self->ws_).socket().shutdown(tcp::socket::shutdown_both, ignored);
+        beast::get_lowest_layer(self->ws_).socket().close(ignored);
       });
     }
 
@@ -273,6 +373,7 @@ namespace khttpd::framework::client
     void on_resolve(std::string target, std::map<std::string, std::string> headers, beast::error_code ec,
                     tcp::resolver::results_type results)
     {
+      if (closing_) return;
       if (ec) return fail(ec);
       beast::get_lowest_layer(ws_).async_connect(results, beast::bind_front_handler(
                                                    &SslWebsocketSession::on_connect,
@@ -283,6 +384,7 @@ namespace khttpd::framework::client
     void on_connect(std::string target, std::map<std::string, std::string> headers, beast::error_code ec,
                     tcp::resolver::results_type::endpoint_type)
     {
+      if (closing_) return;
       if (ec) return fail(ec);
       ws_.next_layer().async_handshake(ssl::stream_base::client,
                                        beast::bind_front_handler(&SslWebsocketSession::on_ssl_handshake,
@@ -292,6 +394,7 @@ namespace khttpd::framework::client
 
     void on_ssl_handshake(std::string target, std::map<std::string, std::string> headers, beast::error_code ec)
     {
+      if (closing_) return;
       if (ec) return fail(ec);
 
       ws_.set_option(websocket::stream_base::timeout::suggested(beast::role_type::client));
@@ -308,8 +411,9 @@ namespace khttpd::framework::client
 
     void on_handshake(beast::error_code ec)
     {
+      if (closing_) return;
       if (ec) return fail(ec);
-      if (connect_cb_) connect_cb_(ec);
+      notify_connect(connect_cb_, ec);
       do_read();
     }
 
@@ -333,7 +437,7 @@ namespace khttpd::framework::client
 
     void fail(beast::error_code ec)
     {
-      if (connect_cb_) connect_cb_(ec);
+      notify_connect(connect_cb_, ec);
     }
   };
 
@@ -342,7 +446,8 @@ namespace khttpd::framework::client
   // ==========================================
 
   WebsocketClient::WebsocketClient()
-      : ioc_(IoContextPool::instance().get_io_context())
+      : ioc_(IoContextPool::instance().get_io_context()),
+        state_(std::make_shared<State>())
   {
     own_ssl_ctx_ = std::make_shared<ssl::context>(ssl::context::tls_client);
     own_ssl_ctx_->set_default_verify_paths();
@@ -350,7 +455,9 @@ namespace khttpd::framework::client
     ssl_ctx_ptr_ = own_ssl_ctx_.get();
   }
 
-  WebsocketClient::WebsocketClient(net::io_context& ioc) : ioc_(ioc)
+  WebsocketClient::WebsocketClient(net::io_context& ioc)
+    : ioc_(ioc),
+      state_(std::make_shared<State>())
   {
     // Default SSL Context
     own_ssl_ctx_ = std::make_shared<ssl::context>(ssl::context::tls_client);
@@ -360,12 +467,19 @@ namespace khttpd::framework::client
   }
 
   WebsocketClient::WebsocketClient(net::io_context& ioc, ssl::context& ssl_ctx)
-    : ioc_(ioc), ssl_ctx_ptr_(&ssl_ctx)
+    : ioc_(ioc), ssl_ctx_ptr_(&ssl_ctx), state_(std::make_shared<State>())
   {
   }
 
   WebsocketClient::~WebsocketClient()
   {
+    {
+      std::lock_guard<std::mutex> lock{state_->mutex};
+      state_->alive = false;
+      state_->on_message = nullptr;
+      state_->on_error = nullptr;
+      state_->on_close = nullptr;
+    }
     close();
   }
 
@@ -398,13 +512,21 @@ namespace khttpd::framework::client
         if (callback) callback(beast::error_code(beast::errc::operation_not_supported, beast::system_category()));
         return;
       }
-      auto s = std::make_shared<SslWebsocketSession>(ioc_, *ssl_ctx_ptr_, this);
+      {
+        std::lock_guard<std::mutex> lock{state_->mutex};
+        state_->close_notified = false;
+      }
+      auto s = std::make_shared<SslWebsocketSession>(ioc_, *ssl_ctx_ptr_, state_);
       session_ = s;
       s->run(host, port, target, headers_, std::move(callback));
     }
     else
     {
-      auto s = std::make_shared<PlainWebsocketSession>(ioc_, this);
+      {
+        std::lock_guard<std::mutex> lock{state_->mutex};
+        state_->close_notified = false;
+      }
+      auto s = std::make_shared<PlainWebsocketSession>(ioc_, state_);
       session_ = s;
       s->run(host, port, target, headers_, std::move(callback));
     }
@@ -427,7 +549,21 @@ namespace khttpd::framework::client
     }
   }
 
-  void WebsocketClient::set_on_message(MessageHandler handler) { on_message_ = std::move(handler); }
-  void WebsocketClient::set_on_error(ErrorHandler handler) { on_error_ = std::move(handler); }
-  void WebsocketClient::set_on_close(CloseHandler handler) { on_close_ = std::move(handler); }
+  void WebsocketClient::set_on_message(MessageHandler handler)
+  {
+    std::lock_guard<std::mutex> lock{state_->mutex};
+    state_->on_message = std::move(handler);
+  }
+
+  void WebsocketClient::set_on_error(ErrorHandler handler)
+  {
+    std::lock_guard<std::mutex> lock{state_->mutex};
+    state_->on_error = std::move(handler);
+  }
+
+  void WebsocketClient::set_on_close(CloseHandler handler)
+  {
+    std::lock_guard<std::mutex> lock{state_->mutex};
+    state_->on_close = std::move(handler);
+  }
 }

@@ -33,6 +33,8 @@ namespace khttpd::framework
     void run();
 
   private:
+    struct ChunkWriteState;
+
     bool disable_web_root_ = false;
     beast::tcp_stream stream_;
     beast::flat_buffer buffer_;
@@ -62,6 +64,7 @@ namespace khttpd::framework
     void send_chunked_response();
     void send_response(http::message_generator msg);
     void on_write_header(beast::error_code ec, std::size_t bytes_transferred);
+    void do_write_chunk(std::shared_ptr<ChunkWriteState> state);
     void on_write(bool keep_alive, beast::error_code ec, std::size_t bytes_transferred);
 
     void do_write_final_chunk();

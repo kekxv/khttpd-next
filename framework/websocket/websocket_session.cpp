@@ -106,9 +106,29 @@ namespace khttpd::framework
 
   void WebsocketSession::do_write_next()
   {
+    if (closed_)
+    {
+      while (!write_queue_.empty())
+      {
+        write_queue_.pop();
+      }
+      writing_ = false;
+      if (close_pending_)
+      {
+        close_pending_ = false;
+        close_stream();
+      }
+      return;
+    }
+
     if (write_queue_.empty())
     {
       writing_ = false;
+      if (close_pending_)
+      {
+        close_pending_ = false;
+        close_stream();
+      }
       return;
     }
 
@@ -185,10 +205,28 @@ namespace khttpd::framework
     if (ec)
     {
       fmt::print(stderr, "WebSocket write error for path '{}': {}\n", initial_path_, ec.message());
+      writing_ = false;
       do_close(ec);
       return;
     }
     do_write_next();
+  }
+
+  void WebsocketSession::close_stream()
+  {
+    if (!ws_.is_open())
+    {
+      return;
+    }
+    ws_.async_close(ws::close_code::normal,
+                    [self = shared_from_this()](beast::error_code close_ec)
+                    {
+                      if (close_ec && close_ec != boost::asio::error::operation_aborted)
+                      {
+                        fmt::print(stderr, "WebSocket close error for path '{}': {}\n",
+                                   self->initial_path_, close_ec.message());
+                      }
+                    });
   }
 
   void WebsocketSession::do_close(beast::error_code ec)
@@ -198,6 +236,10 @@ namespace khttpd::framework
       return;
     }
     closed_ = true;
+    while (!write_queue_.empty())
+    {
+      write_queue_.pop();
+    }
 
     {
       std::unique_lock<std::mutex> lock{m_sessions_mutex};
@@ -214,12 +256,12 @@ namespace khttpd::framework
       WebsocketContext close_ctx(shared_from_this(), initial_path_, ec);
       websocket_router_.dispatch_close(initial_path_, close_ctx);
     }
-    // Close the WebSocket stream to properly release the TCP connection
-    beast::error_code close_ec;
-    ws_.close(ws::close_code::normal, close_ec);
-    if (close_ec && close_ec != boost::asio::error::operation_aborted)
+
+    if (writing_)
     {
-      fmt::print(stderr, "WebSocket close error for path '{}': {}\n", initial_path_, close_ec.message());
+      close_pending_ = true;
+      return;
     }
+    close_stream();
   }
 }

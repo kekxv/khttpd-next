@@ -55,12 +55,14 @@ namespace khttpd::framework
     std::queue<std::pair<std::shared_ptr<const std::string>, bool>> write_queue_;
     bool writing_ = false;
     bool closed_ = false;
+    bool close_pending_ = false;
 
     void on_handshake(beast::error_code ec);
     void do_read();
     void on_read(beast::error_code ec, std::size_t bytes_transferred);
     void do_write_next();
     void on_write(beast::error_code ec, std::size_t bytes_transferred);
+    void close_stream();
     void do_close(beast::error_code ec = {});
   };
 
