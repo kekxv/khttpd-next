@@ -11,6 +11,8 @@
 #include <atomic>
 #include <array>
 #include <sstream>
+#include <mutex>
+#include <vector>
 #include <spdlog/spdlog.h>
 
 #include "io_context_pool.hpp"
@@ -24,6 +26,35 @@ using tcp = boost::asio::ip::tcp;
 
 namespace
 {
+class ClientTestLogger : public ::testing::EmptyTestEventListener
+{
+public:
+  void OnTestStart(const ::testing::TestInfo& test_info) override
+  {
+    spdlog::info("[client_test] START {}.{}", test_info.test_suite_name(), test_info.name());
+  }
+
+  void OnTestEnd(const ::testing::TestInfo& test_info) override
+  {
+    spdlog::info("[client_test] END {}.{} result={}", test_info.test_suite_name(), test_info.name(),
+                 test_info.result()->Passed() ? "PASS" : "FAIL");
+  }
+};
+
+class ClientTestLoggerEnvironment : public ::testing::Environment
+{
+public:
+  void SetUp() override
+  {
+    spdlog::set_level(spdlog::level::info);
+    ::testing::UnitTest::GetInstance()->listeners().Append(new ClientTestLogger());
+    spdlog::info("[client_test] logger installed");
+  }
+};
+
+const auto* const kClientTestLoggerEnvironment =
+  ::testing::AddGlobalTestEnvironment(new ClientTestLoggerEnvironment());
+
 class LocalHttpEchoServer
 {
 public:
@@ -37,10 +68,21 @@ public:
 
   ~LocalHttpEchoServer()
   {
+    spdlog::info("[client_test] LocalHttpEchoServer stopping");
     boost::system::error_code ignored;
     acceptor_.close(ignored);
     ioc_.stop();
     if (thread_.joinable()) thread_.join();
+    std::vector<std::thread> workers;
+    {
+      std::lock_guard<std::mutex> lock(workers_mutex_);
+      workers.swap(workers_);
+    }
+    for (auto& worker : workers)
+    {
+      if (worker.joinable()) worker.join();
+    }
+    spdlog::info("[client_test] LocalHttpEchoServer stopped");
   }
 
   std::string base_url() const
@@ -55,10 +97,11 @@ private:
     {
       if (!ec)
       {
-        std::thread([socket = std::move(socket)]() mutable
+        std::lock_guard<std::mutex> lock(workers_mutex_);
+        workers_.emplace_back([socket = std::move(socket)]() mutable
         {
           handle_session(std::move(socket));
-        }).detach();
+        });
       }
 
       if (acceptor_.is_open())
@@ -133,6 +176,8 @@ private:
   tcp::acceptor acceptor_;
   unsigned short port_;
   std::thread thread_;
+  std::mutex workers_mutex_;
+  std::vector<std::thread> workers_;
 };
 
 class LocalWebSocketEchoServer
@@ -147,10 +192,12 @@ public:
 
   ~LocalWebSocketEchoServer()
   {
+    spdlog::info("[client_test] LocalWebSocketEchoServer stopping");
     boost::system::error_code ignored;
     acceptor_.close(ignored);
     ioc_.stop();
     if (thread_.joinable()) thread_.join();
+    spdlog::info("[client_test] LocalWebSocketEchoServer stopped");
   }
 
   std::string url() const
