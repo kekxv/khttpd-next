@@ -89,6 +89,11 @@ namespace khttpd::framework
     return websocket_router_;
   }
 
+  tcp::endpoint Server::local_endpoint() const
+  {
+    return acceptor_.local_endpoint();
+  }
+
   void Server::run()
   {
     fmt::print("Server listening on {}:{}\n", acceptor_.local_endpoint().address().to_string(),

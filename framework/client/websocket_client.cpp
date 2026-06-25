@@ -186,7 +186,7 @@ namespace khttpd::framework::client
 
   public:
     PlainWebsocketSession(net::io_context& ioc, std::shared_ptr<WebsocketClient::State> state)
-      : WebsocketSessionImpl(std::move(state)), ws_(net::make_strand(ioc)), resolver_(ioc)
+      : WebsocketSessionImpl(std::move(state)), ws_(net::make_strand(ioc)), resolver_(ws_.get_executor())
     {
     }
 
@@ -313,7 +313,7 @@ namespace khttpd::framework::client
 
   public:
     SslWebsocketSession(net::io_context& ioc, ssl::context& ctx, std::shared_ptr<WebsocketClient::State> state)
-      : WebsocketSessionImpl(std::move(state)), ws_(net::make_strand(ioc), ctx), resolver_(ioc)
+      : WebsocketSessionImpl(std::move(state)), ws_(net::make_strand(ioc), ctx), resolver_(ws_.get_executor())
     {
     }
 

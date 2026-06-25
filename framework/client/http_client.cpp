@@ -75,7 +75,7 @@ namespace khttpd::framework::client
 
   public:
     HttpSession(net::io_context& ioc, HttpClient::ResponseCallback cb, std::chrono::seconds timeout)
-      : Session(std::move(cb), timeout), stream_(ioc), resolver_(ioc)
+      : Session(std::move(cb), timeout), stream_(net::make_strand(ioc)), resolver_(stream_.get_executor())
     {
     }
 
@@ -149,7 +149,7 @@ namespace khttpd::framework::client
 
   public:
     HttpsSession(net::io_context& ioc, ssl::context& ctx, HttpClient::ResponseCallback cb, std::chrono::seconds timeout)
-      : Session(std::move(cb), timeout), stream_(ioc, ctx), resolver_(ioc)
+      : Session(std::move(cb), timeout), stream_(net::make_strand(ioc), ctx), resolver_(stream_.get_executor())
     {
     }
 

@@ -30,6 +30,8 @@ namespace khttpd::framework
     WebsocketRouter& get_websocket_router();
     const WebsocketRouter& get_websocket_router() const;
 
+    tcp::endpoint local_endpoint() const;
+
     void run();
 
     void stop();
