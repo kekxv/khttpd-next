@@ -61,10 +61,7 @@ jobs:
 
       - name: Bazel Test
         run: |
-          bazel test framework/... \
-            --test_output=errors \
-            --test_verbose_timeout_warnings \
-            --verbose_failures
+          bazel test framework/... --test_output=errors --test_verbose_timeout_warnings --verbose_failures
   example:
     needs: build
     strategy:
