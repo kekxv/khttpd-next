@@ -7,8 +7,8 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <thread>
 #include <memory>
-#include <fmt/base.h>
 #include <fmt/format.h>
+#include <spdlog/spdlog.h>
 
 #include "HelloController.hpp"
 #include "HelloStreamController.hpp"
@@ -24,7 +24,7 @@ int main(int argc, char* argv[])
   auto const port = static_cast<unsigned short>(8080);
   auto const num_threads = std::max<int>(1, static_cast<int>(std::thread::hardware_concurrency()));
 
-  fmt::print("Starting khttpd server with {} worker threads...\n", num_threads);
+  spdlog::info("Starting khttpd server with {} worker threads...", num_threads);
 
   // 定义 Web 根目录
   std::string web_root_path = "web_root";
@@ -145,7 +145,7 @@ int main(int argc, char* argv[])
           {
             response_msg += fmt::format("Uploaded File: {} ({} bytes, type: {})\n", file.filename, file.data.length(),
                                         file.content_type);
-            // fmt::print("File '{}' content: \n{}\n", file.filename, file.data);
+            // spdlog::debug("File '{}' content: \n{}", file.filename, file.data);
           }
         }
         else
@@ -225,24 +225,24 @@ int main(int argc, char* argv[])
     // onopen
     []([[maybe_unused]] khttpd::framework::WebsocketContext& ctx)
     {
-      fmt::print("[WS: {}] Connection opened.\n", ctx.path);
+      spdlog::info("[WS: {}] Connection opened.", ctx.path);
       ctx.send("Welcome to the echo service!");
     },
     // onmessage
     [](khttpd::framework::WebsocketContext& ctx)
     {
-      fmt::print("[WS: {}] Received: {}\n", ctx.path, ctx.message);
+      spdlog::info("[WS: {}] Received: {}", ctx.path, ctx.message);
       ctx.send("Echo: " + ctx.message, ctx.is_text);
     },
     // onclose
     []([[maybe_unused]] khttpd::framework::WebsocketContext& ctx)
     {
-      fmt::print("[WS: {}] Connection closed.\n", ctx.path);
+      spdlog::info("[WS: {}] Connection closed.", ctx.path);
     },
     // onerror
     [](khttpd::framework::WebsocketContext& ctx)
     {
-      fmt::print(stderr, "[WS: {}] Error: {}\n", ctx.path, ctx.error_code.message());
+      spdlog::error("[WS: {}] Error: {}", ctx.path, ctx.error_code.message());
     }
   );
 
@@ -251,30 +251,30 @@ int main(int argc, char* argv[])
     // onopen
     []([[maybe_unused]] khttpd::framework::WebsocketContext& ctx)
     {
-      fmt::print("[WS: {}] Chat connection opened. Say hello!\n", ctx.path);
+      spdlog::info("[WS: {}] Chat connection opened. Say hello!", ctx.path);
       ctx.send("Welcome to the chat!");
     },
     // onmessage
     [](khttpd::framework::WebsocketContext& ctx)
     {
-      fmt::print("[WS: {}] Chat message: {}\n", ctx.path, ctx.message);
+      spdlog::info("[WS: {}] Chat message: {}", ctx.path, ctx.message);
       ctx.send("You said: " + ctx.message, ctx.is_text);
     },
     // onclose
     []([[maybe_unused]] khttpd::framework::WebsocketContext& ctx)
     {
-      fmt::print("[WS: {}] Chat connection closed.\n", ctx.path);
+      spdlog::info("[WS: {}] Chat connection closed.", ctx.path);
     },
     // onerror
     [](khttpd::framework::WebsocketContext& ctx)
     {
-      fmt::print(stderr, "[WS: {}] Chat error: {}\n", ctx.path, ctx.error_code.message());
+      spdlog::error("[WS: {}] Chat error: {}", ctx.path, ctx.error_code.message());
     }
   );
 
   server->run();
 
-  fmt::print("Application exited.\n");
+  spdlog::info("Application exited.");
 
   return 0;
 }

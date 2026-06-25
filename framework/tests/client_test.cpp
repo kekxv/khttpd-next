@@ -6,9 +6,9 @@
 #include <boost/json.hpp>
 #include <map>
 #include <thread>
-#include <iostream>
 #include <atomic>
 #include <array>
+#include <spdlog/spdlog.h>
 
 #include "io_context_pool.hpp"
 
@@ -394,7 +394,7 @@ TEST_F(WebsocketTest, WssEchoAndWriteQueue)
     if (msg.find("Request served by") != std::string::npos) return;
 
     received_count++;
-    // std::cout << "Msg: " << msg << std::endl;
+    // spdlog::debug("Msg: {}", msg);
 
     if (received_count >= message_count)
     {
@@ -414,7 +414,7 @@ TEST_F(WebsocketTest, WssEchoAndWriteQueue)
     // 忽略操作取消（通常是 close() 导致的 pending read 取消）
     if (ec == boost::asio::error::operation_aborted) return;
 
-    std::cerr << "WS Error: " << ec.message() << std::endl;
+    spdlog::error("WS Error: {}", ec.message());
     has_error = true;
     timer.cancel(); // 发生错误也停止测试
   });
@@ -529,7 +529,7 @@ TEST(WebsocketClientLifecycleTest, DestructorSuppressesPendingConnectCallback)
 
 TEST_F(ClientTest, ThreadPoolVerify)
 {
-  std::cout << "Pool Size: " << khttpd::framework::IoContextPool::instance().get_thread_count() << std::endl;
+  spdlog::debug("Pool Size: {}", khttpd::framework::IoContextPool::instance().get_thread_count());
 
   std::promise<void> p1, p2;
   auto f1 = p1.get_future();
@@ -538,13 +538,13 @@ TEST_F(ClientTest, ThreadPoolVerify)
   // 发起两个请求
   client->echo_get("A", 1, [&](auto, auto)
   {
-    std::cout << "Req 1 processed on thread: " << std::this_thread::get_id() << std::endl;
+    spdlog::debug("Req 1 processed on thread hash: {}", std::hash<std::thread::id>{}(std::this_thread::get_id()));
     p1.set_value();
   });
 
   client->echo_get("B", 2, [&](auto, auto)
   {
-    std::cout << "Req 2 processed on thread: " << std::this_thread::get_id() << std::endl;
+    spdlog::debug("Req 2 processed on thread hash: {}", std::hash<std::thread::id>{}(std::this_thread::get_id()));
     p2.set_value();
   });
 

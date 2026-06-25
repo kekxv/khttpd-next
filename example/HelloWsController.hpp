@@ -6,6 +6,7 @@
 #define HELLOWSCONTROLLER_HPP
 
 #include "controller/http_controller.hpp"
+#include <spdlog/spdlog.h>
 
 class HelloWsController : public khttpd::framework::BaseController<HelloWsController>
 {
@@ -41,23 +42,23 @@ private:
 
   void onopen(khttpd::framework::WebsocketContext& ctx)
   {
-    fmt::print("[WS: {}] Connection opened.\n", ctx.path);
+    spdlog::info("[WS: {}] Connection opened.", ctx.path);
     ctx.send("Welcome to the echo service!");
   }
 
   void onclose(khttpd::framework::WebsocketContext& ctx)
   {
-    fmt::print("[WS: {}] Connection closed.\n", ctx.path);
+    spdlog::info("[WS: {}] Connection closed.", ctx.path);
   }
 
   void onerror(khttpd::framework::WebsocketContext& ctx)
   {
-    fmt::print(stderr, "[WS: {}] Error: {}\n", ctx.path, ctx.error_code.message());
+    spdlog::error("[WS: {}] Error: {}", ctx.path, ctx.error_code.message());
   }
 
   void onmessage(khttpd::framework::WebsocketContext& ctx)
   {
-    fmt::print("[WS: {}] Received: {}\n", ctx.path, ctx.message);
+    spdlog::info("[WS: {}] Received: {}", ctx.path, ctx.message);
     ctx.send("Echo: " + ctx.message, ctx.is_text);
   }
 };

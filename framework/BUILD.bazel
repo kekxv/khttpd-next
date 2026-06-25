@@ -41,5 +41,6 @@ cc_library(
         "@boost.url",
         "@boost.uuid",
         "@fmt",  # 用于日志输出
+        "@spdlog//:spdlog",
     ],
 )

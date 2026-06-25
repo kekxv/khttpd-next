@@ -2,6 +2,7 @@
 #include "server.hpp"
 #include "session/http_session.hpp" // 需要HttpSession
 #include <fmt/core.h>
+#include <spdlog/spdlog.h>
 #include <boost/filesystem.hpp>
 #include <utility>
 
@@ -19,28 +20,28 @@ namespace khttpd::framework
     acceptor_.open(endpoint.protocol(), ec);
     if (ec)
     {
-      fmt::print(stderr, "Server open error: {}\n", ec.message());
+      spdlog::error("Server open error: {}", ec.message());
       throw std::runtime_error(fmt::format("Failed to open acceptor: {}", ec.message()));
     }
 
     acceptor_.set_option(net::socket_base::reuse_address(true), ec);
     if (ec)
     {
-      fmt::print(stderr, "Server set_option reuse_address error: {}\n", ec.message());
+      spdlog::error("Server set_option reuse_address error: {}", ec.message());
       throw std::runtime_error(fmt::format("Failed to set reuse_address: {}", ec.message()));
     }
 
     acceptor_.bind(endpoint, ec);
     if (ec)
     {
-      fmt::print(stderr, "Server bind error: {}\n", ec.message());
+      spdlog::error("Server bind error: {}", ec.message());
       throw std::runtime_error(fmt::format("Failed to bind acceptor: {}", ec.message()));
     }
 
     acceptor_.listen(net::socket_base::max_listen_connections, ec);
     if (ec)
     {
-      fmt::print(stderr, "Server listen error: {}\n", ec.message());
+      spdlog::error("Server listen error: {}", ec.message());
       throw std::runtime_error(fmt::format("Failed to listen: {}", ec.message()));
     }
 
@@ -49,18 +50,18 @@ namespace khttpd::framework
     canonical_web_root_ = boost::filesystem::canonical(web_root_, path_ec);
     if (path_ec)
     {
-      fmt::print(stderr, "Warning: Cannot canonicalize web_root '{}': {}\n", web_root_, path_ec.message());
+      spdlog::warn("Cannot canonicalize web_root '{}': {}", web_root_, path_ec.message());
     }
 
     if (!boost::filesystem::exists(web_root_, ec))
     {
-      fmt::print(stderr, "Warning: Web root directory '{}' does not exist. Static file serving may fail. Error: {}\n",
-                 web_root_, ec.message());
+      spdlog::warn("Web root directory '{}' does not exist. Static file serving may fail. Error: {}",
+                   web_root_, ec.message());
     }
     else if (!boost::filesystem::is_directory(web_root_, ec))
     {
-      fmt::print(stderr, "Warning: Web root path '{}' is not a directory. Static file serving may fail. Error: {}\n",
-                 web_root_, ec.message());
+      spdlog::warn("Web root path '{}' is not a directory. Static file serving may fail. Error: {}",
+                   web_root_, ec.message());
     }
   }
 
@@ -96,8 +97,8 @@ namespace khttpd::framework
 
   void Server::run()
   {
-    fmt::print("Server listening on {}:{}\n", acceptor_.local_endpoint().address().to_string(),
-               acceptor_.local_endpoint().port());
+    spdlog::info("Server listening on {}:{}", acceptor_.local_endpoint().address().to_string(),
+                 acceptor_.local_endpoint().port());
 
     signals_.async_wait(beast::bind_front_handler(&Server::handle_signal, shared_from_this()));
 
@@ -105,7 +106,7 @@ namespace khttpd::framework
 
     IoContextPool::instance().get_io_context().run();
 
-    fmt::print("Server workers stopped.\n");
+    spdlog::info("Server workers stopped.");
   }
 
   void Server::stop()
@@ -114,11 +115,11 @@ namespace khttpd::framework
     acceptor_.close(ec);
     if (ec)
     {
-      fmt::print(stderr, "Server acceptor close error: {}\n", ec.message());
+      spdlog::error("Server acceptor close error: {}", ec.message());
     }
 
     IoContextPool::instance().stop();
-    fmt::print("Server stopped.\n");
+    spdlog::info("Server stopped.");
   }
 
   void Server::do_accept()
@@ -134,7 +135,7 @@ namespace khttpd::framework
     {
       if (ec != boost::system::errc::operation_canceled)
       {
-        fmt::print(stderr, "Server on_accept error: {}\n", ec.message());
+        spdlog::error("Server on_accept error: {}", ec.message());
       }
     }
     else
@@ -152,7 +153,7 @@ namespace khttpd::framework
   {
     if (!error)
     {
-      fmt::print("Received signal {}, shutting down gracefully...\n", signal_number);
+      spdlog::info("Received signal {}, shutting down gracefully...", signal_number);
       stop();
     }
   }

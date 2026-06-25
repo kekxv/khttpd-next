@@ -1,7 +1,7 @@
 // framework/context/websocket_context.cpp
 #include "websocket_context.hpp"
 #include "websocket/websocket_session.hpp"
-#include <fmt/core.h>
+#include <spdlog/spdlog.h>
 
 #include <utility>
 
@@ -36,7 +36,7 @@ namespace khttpd::framework
     }
     else
     {
-      fmt::print(stderr, "Error: Attempted to send WS message to expired session (path: {}).\n", path);
+      spdlog::error("Attempted to send WS message to expired session (path: {}).", path);
     }
   }
 }

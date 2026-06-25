@@ -23,13 +23,13 @@ public:
   {
     constructed = true;
     s_DependencyA_count++;
-    // std::cout << "DependencyA constructed. Count: " << s_DependencyA_count << std::endl;
+    // spdlog::debug("DependencyA constructed. Count: {}", s_DependencyA_count);
   }
 
   ~DependencyA() override
   {
     s_DependencyA_count--;
-    // std::cout << "DependencyA destructed. Count: " << s_DependencyA_count << std::endl;
+    // spdlog::debug("DependencyA destructed. Count: {}", s_DependencyA_count);
   }
 };
 
@@ -43,13 +43,13 @@ public:
   {
     constructed = true;
     s_DependencyB_count++;
-    // std::cout << "DependencyB constructed. Count: " << s_DependencyB_count << std::endl;
+    // spdlog::debug("DependencyB constructed. Count: {}", s_DependencyB_count);
   }
 
   ~DependencyB() override
   {
     s_DependencyB_count--;
-    // std::cout << "DependencyB destructed. Count: " << s_DependencyB_count << std::endl;
+    // spdlog::debug("DependencyB destructed. Count: {}", s_DependencyB_count);
   }
 
   [[nodiscard]] std::shared_ptr<DependencyA> getDepA() const
@@ -68,13 +68,13 @@ public:
   {
     constructed = true;
     s_MainComponent_count++;
-    // std::cout << "MainComponent constructed. Count: " << s_MainComponent_count << std::endl;
+    // spdlog::debug("MainComponent constructed. Count: {}", s_MainComponent_count);
   }
 
   ~MainComponent() override
   {
     s_MainComponent_count--;
-    // std::cout << "MainComponent destructed. Count: " << s_MainComponent_count << std::endl;
+    // spdlog::debug("MainComponent destructed. Count: {}", s_MainComponent_count);
   }
 
   [[nodiscard]] std::shared_ptr<DependencyB> getDepB() const
@@ -204,7 +204,7 @@ TEST_F(DIContainerTest, ComponentIsSingleton)
 TEST_F(DIContainerTest, OverwriteRegistrationWarning)
 {
   container.register_component<DependencyA>();
-  // std::cerr 在GTest中通常会被捕获或重定向，这里我们只是确保它不崩溃
+  // GTest usually captures or redirects warning logs; this only verifies it does not crash.
   container.register_component<DependencyA>();
 
   // 验证仍能解析

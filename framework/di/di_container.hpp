@@ -4,7 +4,6 @@
 
 #ifndef DI_CONTAINER_HPP
 #define DI_CONTAINER_HPP
-#include <iostream>
 #include <memory>        // For std::shared_ptr
 #include <typeindex>     // For std::type_index
 #include <map>           // For std::map
@@ -13,6 +12,7 @@
 #include <stdexcept>     // For std::runtime_error
 #include <string>        // For typeid(T).name()
 #include <mutex>         // For std::mutex
+#include <spdlog/spdlog.h>
 
 namespace khttpd
 {
@@ -41,7 +41,7 @@ namespace khttpd
         std::unique_lock<std::mutex> lock(mtx_);
         if (component_factories_.count(type_idx))
         {
-          std::cerr << "Warning: Component " << typeid(T).name() << " already registered. Overwriting." << std::endl;
+          spdlog::warn("Component {} already registered. Overwriting.", typeid(T).name());
         }
 
         auto factory = [](const DI_Container& container) -> std::shared_ptr<void>

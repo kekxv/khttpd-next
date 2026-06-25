@@ -1,6 +1,7 @@
 // framework/router/http_router.cpp
 #include "http_router.hpp"
 #include <fmt/core.h>
+#include <spdlog/spdlog.h>
 #include <algorithm>
 
 namespace khttpd::framework
@@ -104,7 +105,8 @@ namespace khttpd::framework
       if (entry.original_path == path_pattern)
       {
         entry.handlers[method] = std::move(handler);
-        fmt::print("Updated handler for route: {} {}\n", boost::beast::http::to_string(method), path_pattern);
+        spdlog::debug("Updated handler for route: {} {}", std::string(boost::beast::http::to_string(method)),
+                      path_pattern);
         return;
       }
     }
@@ -120,8 +122,8 @@ namespace khttpd::framework
 
     routes_.push_back(std::move(new_entry));
     std::sort(routes_.begin(), routes_.end(), RouteEntry::compare_specificity);
-    fmt::print("Registered dynamic route: {} {} (literal:{}, dynamic:{})\n",
-               boost::beast::http::to_string(method), path_pattern, literal_count, dynamic_count);
+    spdlog::debug("Registered dynamic route: {} {} (literal:{}, dynamic:{})",
+                  std::string(boost::beast::http::to_string(method)), path_pattern, literal_count, dynamic_count);
   }
 
   void HttpRouter::get(const std::string& path, HttpHandler handler)
@@ -225,7 +227,7 @@ namespace khttpd::framework
     ctx.set_content_type("text/html");
     ctx.set_body(fmt::format("<h1>404 Not Found</h1><p>The resource '{}' was not found on this server.</p>",
                              ctx.path()));
-    fmt::print(stderr, "404 Not Found: {}\n", ctx.path());
+    spdlog::warn("404 Not Found: {}", ctx.path());
   }
 
   void HttpRouter::handle_method_not_allowed(HttpContext& ctx,
@@ -245,7 +247,8 @@ namespace khttpd::framework
       first = false;
     }
     ctx.set_header(boost::beast::http::field::allow, allowed_methods_str);
-    fmt::print(stderr, "405 Method Not Allowed: {} {}\n", boost::beast::http::to_string(ctx.method()), ctx.path());
+    spdlog::warn("405 Method Not Allowed: {} {}", std::string(boost::beast::http::to_string(ctx.method())),
+                 ctx.path());
   }
 
   void HttpRouter::add_exception_handler(std::shared_ptr<ExceptionHandlerBase> handler)
@@ -263,7 +266,7 @@ namespace khttpd::framework
     if (!eptr)
     {
       // Should not happen, but safeguard against null pointer
-      fmt::print(stderr, "handle_exception called with null exception_ptr\n");
+      spdlog::error("handle_exception called with null exception_ptr");
       handle_unknown_exception(ctx);
       return;
     }
@@ -283,7 +286,7 @@ namespace khttpd::framework
     }
     catch (const std::exception& e)
     {
-      fmt::print(stderr, "Unhandled exception: {}\n", e.what());
+      spdlog::error("Unhandled exception: {}", e.what());
       ctx.set_status(boost::beast::http::status::internal_server_error);
       ctx.set_content_type("text/html");
       ctx.set_body(fmt::format("<h1>500 Internal Server Error</h1><p>Exception: {}</p>", e.what()));
@@ -305,7 +308,7 @@ namespace khttpd::framework
       return;
     }
 
-    fmt::print(stderr, "Unknown exception occurred.\n");
+    spdlog::error("Unknown exception occurred.");
     ctx.set_status(boost::beast::http::status::internal_server_error);
     ctx.set_content_type("text/html");
     ctx.set_body("<h1>500 Internal Server Error</h1><p>An unknown error occurred.</p>");

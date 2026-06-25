@@ -2,6 +2,7 @@
 
 #include "context/http_context.hpp"
 #include <fmt/core.h>
+#include <spdlog/spdlog.h>
 #include <sstream>
 #include <thread>
 #include <utility>
@@ -63,13 +64,13 @@ void HttpSession::on_read(const beast::error_code& ec, std::size_t bytes_transfe
   }
   if (ec)
   {
-    fmt::print(stderr, "HttpSession on_read error: {}\n", ec.message());
+    spdlog::error("HttpSession on_read error: {}", ec.message());
     return;
   }
 
   if (beast::websocket::is_upgrade(req_))
   {
-    fmt::print("Detected WebSocket upgrade request for target: {}\n", req_.target());
+    spdlog::debug("Detected WebSocket upgrade request for target: {}", std::string(req_.target()));
     handle_websocket_upgrade();
     return;
   }
@@ -194,7 +195,7 @@ bool HttpSession::do_serve_static_file()
     {
       return false;
     }
-    fmt::print(stderr, "Error canonicalizing path '{}': {}\n", full_local_path.string(), ec.message());
+    spdlog::error("Error canonicalizing path '{}': {}", full_local_path.string(), ec.message());
     http::response<http::string_body> forbidden_res{http::status::forbidden, req_.version()};
     forbidden_res.keep_alive(req_.keep_alive());
     forbidden_res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
@@ -223,7 +224,7 @@ bool HttpSession::do_serve_static_file()
   {
     if (ec)
     {
-      fmt::print(stderr, "Error checking if path is directory '{}': {}\n", full_local_path.string(), ec.message());
+      spdlog::error("Error checking if path is directory '{}': {}", full_local_path.string(), ec.message());
       return false;
     }
     boost::filesystem::path index_file_path = full_local_path / "index.html";
@@ -260,7 +261,7 @@ bool HttpSession::do_serve_static_file()
   file_res.body().open(full_local_path.string().c_str(), beast::file_mode::scan, ec);
   if (ec)
   {
-    fmt::print(stderr, "Error opening file {}: {}\n", full_local_path.string(), ec.message());
+    spdlog::error("Error opening file {}: {}", full_local_path.string(), ec.message());
     http::response<http::string_body> internal_error_res{http::status::internal_server_error, req_.version()};
     internal_error_res.keep_alive(req_.keep_alive());
     internal_error_res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
@@ -315,7 +316,7 @@ void HttpSession::on_write_header(beast::error_code ec, std::size_t bytes_transf
   boost::ignore_unused(bytes_transferred);
   if (ec)
   {
-    fmt::print(stderr, "HttpSession on_write_header error: {}\n", ec.message());
+    spdlog::error("HttpSession on_write_header error: {}", ec.message());
     return;
   }
 
@@ -437,7 +438,7 @@ void HttpSession::on_write(bool keep_alive, beast::error_code ec, std::size_t by
 
   if (ec)
   {
-    fmt::print(stderr, "HttpSession on_write error: {}\n", ec.message());
+    spdlog::error("HttpSession on_write error: {}", ec.message());
     return;
   }
 
@@ -455,7 +456,7 @@ void HttpSession::do_close()
   stream_.socket().shutdown(tcp::socket::shutdown_send, ec);
   if (ec)
   {
-    fmt::print(stderr, "HttpSession shutdown error: {}\n", ec.message());
+    spdlog::error("HttpSession shutdown error: {}", ec.message());
   }
 }
 

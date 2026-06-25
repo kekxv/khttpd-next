@@ -53,7 +53,7 @@ namespace khttpd::framework::client
 
     void on_fail(beast::error_code ec, const char* what)
     {
-      // Log if needed: std::cerr << what << ": " << ec.message() << "\n";
+      // Log if needed: spdlog::error("{}: {}", what, ec.message());
       boost::ignore_unused(what);
       complete(ec, {});
     }
