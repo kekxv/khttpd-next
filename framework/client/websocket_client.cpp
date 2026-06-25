@@ -130,6 +130,7 @@ namespace khttpd::framework::client
           ec == net::error::eof ||
           ec == ssl::error::stream_truncated ||
           ec == boost::asio::error::connection_reset ||
+          ec == boost::asio::error::bad_descriptor ||
           ec == boost::asio::error::operation_aborted)
         {
           notify_close();
@@ -151,7 +152,7 @@ namespace khttpd::framework::client
       if (ec)
       {
         is_writing_ = false; // Stop writing on error
-        if (ec == websocket::error::closed || ec == net::error::operation_aborted)
+        if (ec == websocket::error::closed || ec == net::error::operation_aborted || ec == net::error::bad_descriptor)
         {
           notify_close();
         }

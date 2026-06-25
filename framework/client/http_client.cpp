@@ -129,8 +129,9 @@ namespace khttpd::framework::client
       boost::ignore_unused(bytes_transferred);
       if (ec) return on_fail(ec, "read");
 
-      stream_.socket().shutdown(tcp::socket::shutdown_both, ec);
-      complete(ec, std::move(res_));
+      beast::error_code ignored;
+      stream_.socket().shutdown(tcp::socket::shutdown_both, ignored);
+      complete({}, std::move(res_));
     }
   };
 
