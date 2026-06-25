@@ -22,6 +22,9 @@ namespace khttpd_fw = khttpd::framework;
 
 namespace
 {
+  constexpr int kThreadCount = 8;
+  constexpr int kRequestsPerThread = 50;
+
   struct TempWebRoot
   {
     fs::path path;
@@ -97,19 +100,17 @@ TEST(ServerStabilityTest, HandlesManyConcurrentRequests)
 
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-  constexpr int thread_count = 8;
-  constexpr int requests_per_thread = 50;
   std::atomic<int> successes{0};
   std::vector<std::thread> clients;
-  clients.reserve(thread_count);
+  clients.reserve(kThreadCount);
 
-  for (int t = 0; t < thread_count; ++t)
+  for (int t = 0; t < kThreadCount; ++t)
   {
     clients.emplace_back([port, t, &successes]()
     {
-      for (int i = 0; i < requests_per_thread; ++i)
+      for (int i = 0; i < kRequestsPerThread; ++i)
       {
-        if (request_once(port, t * requests_per_thread + i))
+        if (request_once(port, t * kRequestsPerThread + i))
         {
           successes.fetch_add(1, std::memory_order_relaxed);
         }
@@ -128,7 +129,7 @@ TEST(ServerStabilityTest, HandlesManyConcurrentRequests)
     server_thread.join();
   }
 
-  constexpr int total_requests = thread_count * requests_per_thread;
+  constexpr int total_requests = kThreadCount * kRequestsPerThread;
   EXPECT_EQ(successes.load(), total_requests);
   EXPECT_EQ(handled.load(), total_requests);
 }
