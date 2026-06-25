@@ -1,5 +1,7 @@
 #include "http_client.hpp"
 #include <boost/asio/connect.hpp>
+#include <boost/asio/ssl/host_name_verification.hpp>
+#include <atomic>
 #include <iostream>
 #include "io_context_pool.hpp"
 
@@ -136,6 +138,7 @@ namespace khttpd::framework::client
         beast::error_code ec{static_cast<int>(::ERR_get_error()), net::error::get_ssl_category()};
         return on_fail(ec, "ssl_setup");
       }
+      stream_.set_verify_callback(ssl::host_name_verification(host));
 
       stream_.next_layer().expires_after(timeout_);
       resolver_.async_resolve(host, port,
@@ -178,7 +181,15 @@ namespace khttpd::framework::client
     void on_read(beast::error_code ec, std::size_t bytes_transferred)
     {
       boost::ignore_unused(bytes_transferred);
-      if (ec) return on_fail(ec, "read");
+      if (ec)
+      {
+        if ((ec == ssl::error::stream_truncated || ec == net::error::eof) && res_.result_int() != 0)
+        {
+          if (callback_) callback_({}, std::move(res_));
+          return;
+        }
+        return on_fail(ec, "read");
+      }
 
       stream_.async_shutdown(beast::bind_front_handler(&HttpsSession::on_shutdown, get_shared()));
     }
@@ -198,7 +209,7 @@ namespace khttpd::framework::client
     // 同样的默认 SSL 初始化逻辑
     own_ssl_ctx_ = std::make_shared<ssl::context>(ssl::context::tls_client);
     own_ssl_ctx_->set_default_verify_paths();
-    own_ssl_ctx_->set_verify_mode(ssl::verify_none);
+    own_ssl_ctx_->set_verify_mode(ssl::verify_peer);
     ssl_ctx_ptr_ = own_ssl_ctx_.get();
   }
 
@@ -215,7 +226,7 @@ namespace khttpd::framework::client
   {
     own_ssl_ctx_ = std::make_shared<ssl::context>(ssl::context::tls_client);
     own_ssl_ctx_->set_default_verify_paths();
-    own_ssl_ctx_->set_verify_mode(ssl::verify_none);
+    own_ssl_ctx_->set_verify_mode(ssl::verify_peer);
     ssl_ctx_ptr_ = own_ssl_ctx_.get();
   }
 
@@ -390,16 +401,24 @@ namespace khttpd::framework::client
     const std::string& body,
     const std::map<std::string, std::string>& headers)
   {
-    std::promise<std::pair<beast::error_code, http::response<http::string_body>>> p;
-    auto f = p.get_future();
+    auto p = std::make_shared<std::promise<std::pair<beast::error_code, http::response<http::string_body>>>>();
+    auto completed = std::make_shared<std::atomic<bool>>(false);
+    auto f = p->get_future();
 
     this->request(method, path, query_params, body, headers,
-                  [&p](beast::error_code ec, http::response<http::string_body> res)
+                  [p, completed](beast::error_code ec, http::response<http::string_body> res)
                   {
-                    p.set_value({ec, std::move(res)});
+                    if (!completed->exchange(true))
+                    {
+                      p->set_value({ec, std::move(res)});
+                    }
                   });
 
-    f.wait();
+    if (f.wait_for(timeout_ + std::chrono::seconds(1)) != std::future_status::ready)
+    {
+      completed->store(true);
+      throw boost::system::system_error(beast::error_code(beast::errc::timed_out, beast::system_category()));
+    }
     auto result = f.get();
 
     if (result.first)

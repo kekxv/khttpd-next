@@ -54,6 +54,7 @@ namespace khttpd::framework
     // Write queue to serialize concurrent async_write calls
     std::queue<std::pair<std::shared_ptr<const std::string>, bool>> write_queue_;
     bool writing_ = false;
+    bool closed_ = false;
 
     void on_handshake(beast::error_code ec);
     void do_read();

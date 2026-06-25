@@ -87,13 +87,21 @@ namespace khttpd::framework
 
   void WebsocketSession::send_message(const std::string& msg, bool is_text_msg)
   {
+    auto self = shared_from_this();
     auto ss = std::make_shared<const std::string>(msg);
-    write_queue_.emplace(ss, is_text_msg);
-    if (!writing_)
+    net::post(ws_.get_executor(), [self, ss, is_text_msg]()
     {
-      writing_ = true;
-      do_write_next();
-    }
+      if (self->closed_)
+      {
+        return;
+      }
+      self->write_queue_.emplace(ss, is_text_msg);
+      if (!self->writing_)
+      {
+        self->writing_ = true;
+        self->do_write_next();
+      }
+    });
   }
 
   void WebsocketSession::do_write_next()
@@ -180,10 +188,22 @@ namespace khttpd::framework
       do_close(ec);
       return;
     }
+    do_write_next();
   }
 
   void WebsocketSession::do_close(beast::error_code ec)
   {
+    if (closed_)
+    {
+      return;
+    }
+    closed_ = true;
+
+    {
+      std::unique_lock<std::mutex> lock{m_sessions_mutex};
+      m_sessions_id_.erase(id);
+    }
+
     if (ec && ec != ws::error::closed && ec != boost::asio::error::eof)
     {
       WebsocketContext error_ctx(shared_from_this(), initial_path_, ec);
@@ -192,10 +212,6 @@ namespace khttpd::framework
     else
     {
       WebsocketContext close_ctx(shared_from_this(), initial_path_, ec);
-      {
-        std::unique_lock<std::mutex> lock{m_sessions_mutex};
-        m_sessions_id_.erase(id);
-      }
       websocket_router_.dispatch_close(initial_path_, close_ctx);
     }
     // Close the WebSocket stream to properly release the TCP connection

@@ -30,6 +30,7 @@ namespace khttpd::framework::client
     }
 
     std::uniform_int_distribution<int> dist(1, total_weight_);
+    std::lock_guard<std::mutex> lock{rng_mutex_};
     int r = dist(rng_);
 
     auto it = std::lower_bound(cumulative_weights_.begin(), cumulative_weights_.end(), r);

@@ -44,7 +44,7 @@ namespace khttpd
           std::cerr << "Warning: Component " << typeid(T).name() << " already registered. Overwriting." << std::endl;
         }
 
-        auto factory = [this](const DI_Container& container) -> std::shared_ptr<void>
+        auto factory = [](const DI_Container& container) -> std::shared_ptr<void>
         {
           return std::make_shared<T>(container.resolve<Args>()...);
         };

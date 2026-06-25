@@ -18,6 +18,11 @@ namespace khttpd::framework
     // 获取单例实例
     static IoContextPool& instance(unsigned int num_threads = 0)
     {
+      if (num_threads == 0)
+      {
+        num_threads = std::thread::hardware_concurrency();
+        if (num_threads == 0) num_threads = 1;
+      }
       static IoContextPool instance{num_threads};
       return instance;
     }

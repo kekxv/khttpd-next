@@ -7,6 +7,7 @@
 #include <map>
 #include <thread>
 #include <iostream>
+#include <atomic>
 
 #include "io_context_pool.hpp"
 
@@ -275,6 +276,22 @@ TEST(EasyModeTest, AsyncRequest)
   future.wait();
 }
 
+TEST(HttpClientLocalTest, SyncRequestWithUnrunExternalIoContextTimesOut)
+{
+  boost::asio::io_context ioc;
+  HttpClient client(ioc);
+  client.set_base_url("http://127.0.0.1:9");
+  client.set_timeout(std::chrono::seconds(0));
+
+  auto start = std::chrono::steady_clock::now();
+  EXPECT_THROW(
+    client.request_sync(http::verb::get, "/", {}, "", {}),
+    boost::system::system_error);
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_LT(elapsed, std::chrono::seconds(2));
+}
+
 
 // ==========================================
 // WebSocket 测试
@@ -514,6 +531,37 @@ TEST(ApiMacrosTest, HostPoolWeighted)
     const auto& picked = pool.pick();
     ASSERT_TRUE(picked == "http://host-a.com" || picked == "http://host-b.com");
   }
+}
+
+TEST(ApiMacrosTest, HostPoolPickIsThreadSafe)
+{
+  std::vector<HostEntry> hosts = {
+    {"http://host-a.com", 3},
+    {"http://host-b.com", 1},
+  };
+  HostPool pool(hosts);
+  std::atomic<int> picks{0};
+  std::vector<std::thread> threads;
+
+  for (int t = 0; t < 8; ++t)
+  {
+    threads.emplace_back([&]()
+    {
+      for (int i = 0; i < 1000; ++i)
+      {
+        const auto& picked = pool.pick();
+        ASSERT_TRUE(picked == "http://host-a.com" || picked == "http://host-b.com");
+        picks++;
+      }
+    });
+  }
+
+  for (auto& thread : threads)
+  {
+    thread.join();
+  }
+
+  ASSERT_EQ(picks.load(), 8000);
 }
 
 // Test multi-host API client

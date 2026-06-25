@@ -1,6 +1,7 @@
 #include "websocket_client.hpp"
 #include <iostream>
 #include <boost/url.hpp>
+#include <boost/asio/ssl/host_name_verification.hpp>
 
 #include "io_context_pool.hpp"
 
@@ -240,6 +241,7 @@ namespace khttpd::framework::client
       {
         return fail(beast::error_code(static_cast<int>(::ERR_get_error()), net::error::get_ssl_category()));
       }
+      ws_.next_layer().set_verify_callback(ssl::host_name_verification(host));
 
       resolver_.async_resolve(host, port, beast::bind_front_handler(&SslWebsocketSession::on_resolve,
                                                                     std::static_pointer_cast<SslWebsocketSession>(
@@ -344,7 +346,7 @@ namespace khttpd::framework::client
   {
     own_ssl_ctx_ = std::make_shared<ssl::context>(ssl::context::tls_client);
     own_ssl_ctx_->set_default_verify_paths();
-    own_ssl_ctx_->set_verify_mode(ssl::verify_none);
+    own_ssl_ctx_->set_verify_mode(ssl::verify_peer);
     ssl_ctx_ptr_ = own_ssl_ctx_.get();
   }
 
@@ -353,7 +355,7 @@ namespace khttpd::framework::client
     // Default SSL Context
     own_ssl_ctx_ = std::make_shared<ssl::context>(ssl::context::tls_client);
     own_ssl_ctx_->set_default_verify_paths();
-    own_ssl_ctx_->set_verify_mode(ssl::verify_none);
+    own_ssl_ctx_->set_verify_mode(ssl::verify_peer);
     ssl_ctx_ptr_ = own_ssl_ctx_.get();
   }
 

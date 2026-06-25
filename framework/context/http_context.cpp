@@ -4,6 +4,7 @@
 #include <algorithm> // for std::remove_if
 #include <iomanip>   // for std::quoted (not directly used here, but useful for debugging)
 #include <regex>
+#include <string_view>
 #include <boost/beast/version.hpp>
 #include <boost/url/parse.hpp>
 
@@ -238,7 +239,11 @@ namespace khttpd::framework
       return;
     }
     std::string boundary = content_type_header->substr(boundary_pos + std::string("boundary=").length());
-    boundary = trim(boundary); // Trim potential quotes or whitespace
+    boundary = trim(boundary);
+    if (boundary.length() >= 2 && boundary.front() == '"' && boundary.back() == '"')
+    {
+      boundary = boundary.substr(1, boundary.length() - 2);
+    }
 
     std::string full_boundary = "--" + boundary;
     std::string final_boundary = full_boundary + "--";
@@ -274,21 +279,16 @@ namespace khttpd::framework
         part_headers = part_headers.substr(2);
       }
 
-      // Find start of next boundary (or final boundary)
-      size_t next_boundary_pos = body_str.find(full_boundary, header_end_pos + 4); // +4 for \r\n\r\n
-      if (next_boundary_pos == std::string::npos)
+      const size_t data_start = header_end_pos + 4;
+      size_t boundary_marker_pos = body_str.find("\r\n" + full_boundary, data_start);
+      if (boundary_marker_pos == std::string::npos)
       {
         fmt::print(stderr, "Multipart/form-data: Next boundary not found. Malformed or premature end.\n");
         break; // Malformed or end of stream
       }
+      const size_t next_boundary_pos = boundary_marker_pos + 2;
 
-      std::string part_data = body_str.substr(header_end_pos + 4, next_boundary_pos - (header_end_pos + 4));
-      // Trim trailing \r\n from data before boundary
-      if (part_data.length() >= 2 && part_data[part_data.length() - 2] == '\r' && part_data[part_data.length() - 1] ==
-        '\n')
-      {
-        part_data = part_data.substr(0, part_data.length() - 2);
-      }
+      std::string part_data = body_str.substr(data_start, boundary_marker_pos - data_start);
 
       // Parse Content-Disposition
       std::string content_disposition = extract_header_value(part_headers, "Content-Disposition");

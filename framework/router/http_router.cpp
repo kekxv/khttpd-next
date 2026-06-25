@@ -183,7 +183,12 @@ namespace khttpd::framework
     {
       if (std::smatch matches; std::regex_match(request_path, matches, entry.path_regex))
       {
-        if (const auto method_it = entry.handlers.find(request_method); method_it != entry.handlers.end())
+        auto method_it = entry.handlers.find(request_method);
+        if (method_it == entry.handlers.end() && request_method == boost::beast::http::verb::head)
+        {
+          method_it = entry.handlers.find(boost::beast::http::verb::get);
+        }
+        if (method_it != entry.handlers.end())
         {
           std::map<std::string, std::string> path_params;
           for (size_t i = 0; i < entry.param_names.size(); ++i)
