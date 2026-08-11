@@ -5,6 +5,10 @@
 #include <functional>
 #include <string>
 #include <map>
+#include <regex>
+#include <shared_mutex>
+#include <tuple>
+#include <vector>
 #include "context/websocket_context.hpp"
 
 namespace khttpd::framework
@@ -29,6 +33,22 @@ namespace khttpd::framework
     WebsocketErrorHandler on_error;
   };
 
+  struct WebsocketRoute
+  {
+    std::string original_path;
+    std::regex path_regex;
+    std::vector<std::string> param_names;
+    int literal_segments_count = 0;
+    int dynamic_segments_count = 0;
+    WebsocketRouteEntry handlers;
+    static bool compare_specificity(const WebsocketRoute& a, const WebsocketRoute& b)
+    {
+      return a.literal_segments_count == b.literal_segments_count
+        ? a.dynamic_segments_count < b.dynamic_segments_count
+        : a.literal_segments_count > b.literal_segments_count;
+    }
+  };
+
   class WebsocketRouter
   {
   public:
@@ -46,7 +66,11 @@ namespace khttpd::framework
     void dispatch_error(const std::string& path, WebsocketContext& ctx);
 
   private:
-    std::map<std::string, WebsocketRouteEntry> handlers_; // 路径 -> 处理器集合
+    static std::tuple<std::regex, std::vector<std::string>, int, int> parse_path_pattern(const std::string& pattern);
+    void dispatch(const std::string& path, WebsocketContext& ctx,
+                  const std::function<void(const WebsocketRouteEntry&)>& invoke);
+    std::vector<WebsocketRoute> handlers_;
+    mutable std::shared_mutex handlers_mutex_;
   };
 }
 #endif // KHTTPD_FRAMEWORK_ROUTER_WEBSOCKET_ROUTER_HPP

@@ -39,6 +39,30 @@ namespace khttpd::framework
     }
     spdlog::debug("WebSocket handshake successful for path: {}", initial_path_);
 
+    std::weak_ptr<WebsocketSession> weak = shared_from_this();
+    ws_.control_callback([weak](ws::frame_type type, beast::string_view payload)
+    {
+      const auto self = weak.lock();
+      if (!self) return;
+      WebsocketFrameType frame_type;
+      switch (type)
+      {
+        case ws::frame_type::ping: frame_type = WebsocketFrameType::ping; break;
+        case ws::frame_type::pong: frame_type = WebsocketFrameType::pong; break;
+        case ws::frame_type::close: frame_type = WebsocketFrameType::close; break;
+      }
+      WebsocketContext ctx(self, self->initial_path_);
+      ctx.frame.type = frame_type;
+      ctx.frame.payload = std::string(payload);
+      if (type == ws::frame_type::close)
+      {
+        const auto reason = self->ws_.reason();
+        ctx.frame.close_code = static_cast<uint16_t>(reason.code);
+        ctx.frame.close_reason = reason.reason.c_str();
+      }
+      self->websocket_router_.dispatch_message(self->initial_path_, ctx);
+    });
+
     WebsocketContext open_ctx(shared_from_this(), initial_path_);
     {
       std::unique_lock<std::mutex> lock{m_sessions_mutex};
@@ -87,15 +111,19 @@ namespace khttpd::framework
 
   void WebsocketSession::send_message(const std::string& msg, bool is_text_msg)
   {
+    send_frame({is_text_msg ? WebsocketFrameType::text : WebsocketFrameType::binary, msg});
+  }
+
+  void WebsocketSession::send_frame(WebsocketFrame frame)
+  {
     auto self = shared_from_this();
-    auto ss = std::make_shared<const std::string>(msg);
-    net::post(ws_.get_executor(), [self, ss, is_text_msg]()
+    net::post(ws_.get_executor(), [self, frame = std::move(frame)]() mutable
     {
       if (self->closed_)
       {
         return;
       }
-      self->write_queue_.emplace(ss, is_text_msg);
+      self->write_queue_.push(std::move(frame));
       if (!self->writing_)
       {
         self->writing_ = true;
@@ -132,12 +160,27 @@ namespace khttpd::framework
       return;
     }
 
-    auto item = std::move(write_queue_.front());
+    auto frame = std::move(write_queue_.front());
     write_queue_.pop();
-    auto& ss = item.first;
-    auto is_text_msg = item.second;
+    if (frame.type == WebsocketFrameType::close)
+    {
+      closed_ = true;
+      ws_.async_close({static_cast<ws::close_code>(frame.close_code), frame.close_reason},
+                      [self = shared_from_this()](beast::error_code ec) { self->on_write(ec, 0); });
+      return;
+    }
+    if (frame.type == WebsocketFrameType::ping || frame.type == WebsocketFrameType::pong)
+    {
+      const ws::ping_data payload(frame.payload);
+      if (frame.type == WebsocketFrameType::ping)
+        ws_.async_ping(payload, [self = shared_from_this()](beast::error_code ec) { self->on_write(ec, 0); });
+      else
+        ws_.async_pong(payload, [self = shared_from_this()](beast::error_code ec) { self->on_write(ec, 0); });
+      return;
+    }
+    auto ss = std::make_shared<const std::string>(std::move(frame.payload));
 
-    ws_.text(is_text_msg);
+    ws_.text(frame.type == WebsocketFrameType::text);
 
     if (ss->length() < auto_fragment_threshold_)
     {
@@ -254,6 +297,10 @@ namespace khttpd::framework
     else
     {
       WebsocketContext close_ctx(shared_from_this(), initial_path_, ec);
+      const auto reason = ws_.reason();
+      close_ctx.frame.type = WebsocketFrameType::close;
+      close_ctx.frame.close_code = static_cast<uint16_t>(reason.code);
+      close_ctx.frame.close_reason = reason.reason.c_str();
       websocket_router_.dispatch_close(initial_path_, close_ctx);
     }
 

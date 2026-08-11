@@ -14,6 +14,7 @@
 #include <vector>
 #include <map>
 #include <deque>
+#include "context/websocket_context.hpp"
 
 namespace khttpd::framework::client
 {
@@ -33,6 +34,7 @@ namespace khttpd::framework::client
 
     using ConnectCallback = std::function<void(beast::error_code)>;
     using MessageHandler = std::function<void(const std::string&)>;
+    using FrameHandler = std::function<void(const WebsocketFrame&)>;
     using ErrorHandler = std::function<void(beast::error_code)>;
     using CloseHandler = std::function<void()>;
 
@@ -47,13 +49,17 @@ namespace khttpd::framework::client
 
     // 发送消息 (线程安全，支持并发调用)
     void send(const std::string& message);
+    void send(WebsocketFrame frame);
 
     // 关闭连接
     void close();
 
     // 配置
     void set_header(const std::string& key, const std::string& value);
+    void set_subprotocols(const std::vector<std::string>& subprotocols);
+    std::string negotiated_subprotocol() const;
     void set_on_message(MessageHandler handler);
+    void set_on_frame(FrameHandler handler);
     void set_on_error(ErrorHandler handler);
     void set_on_close(CloseHandler handler);
 

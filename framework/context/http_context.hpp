@@ -6,6 +6,7 @@
 #include <boost/beast/http/status.hpp>
 #include <boost/url/url_view.hpp>
 #include <boost/json.hpp>
+#include <boost/asio/ip/tcp.hpp>
 #include <string>
 #include <map>
 #include <optional>
@@ -40,7 +41,8 @@ namespace khttpd::framework
     using WriteHandler = std::function<bool(const std::string& buffer)>;
     using HttpStreamHandler = std::function<void(HttpContext&, const WriteHandler&)>;
 
-    HttpContext(Request& req, Response& res);
+    HttpContext(Request& req, Response& res,
+                std::optional<boost::asio::ip::tcp::endpoint> peer_endpoint = std::nullopt);
     ~HttpContext();
 
     const std::string& path() const;
@@ -52,6 +54,12 @@ namespace khttpd::framework
     std::optional<std::string> get_header(boost::beast::http::field name) const;
     std::optional<std::vector<std::string>> get_headers(boost::beast::string_view name) const;
     std::optional<std::vector<std::string>> get_headers(boost::beast::http::field name) const;
+
+    // The transport peer, captured from the accepted socket. Unlike forwarded
+    // headers this value cannot be supplied by the HTTP client.
+    const std::optional<boost::asio::ip::tcp::endpoint>& peer_endpoint() const { return peer_endpoint_; }
+    std::optional<boost::asio::ip::address> peer_address() const
+    { return peer_endpoint_ ? std::optional{peer_endpoint_->address()} : std::nullopt; }
 
     // Cookie support
     std::optional<std::string> get_cookie(const std::string& key) const;
@@ -131,6 +139,7 @@ namespace khttpd::framework
   private:
     Request& req_;
     Response& res_;
+    std::optional<boost::asio::ip::tcp::endpoint> peer_endpoint_;
     mutable std::map<std::string, std::string> query_params_;
     mutable std::string cached_path_;
     mutable boost::urls::url_view parsed_url_;

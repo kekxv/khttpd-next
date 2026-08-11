@@ -2,6 +2,7 @@
 #define KHTTPD_FRAMEWORK_INTERCEPTOR_INTERCEPTOR_HPP_
 
 #include "context/http_context.hpp"
+#include <functional>
 
 namespace khttpd::framework
 {
@@ -14,6 +15,7 @@ namespace khttpd::framework
   class Interceptor
   {
   public:
+    using RequestCompletion = std::function<void(InterceptorResult)>;
     virtual ~Interceptor() = default;
 
     /**
@@ -24,6 +26,14 @@ namespace khttpd::framework
     virtual InterceptorResult handle_request(HttpContext& ctx)
     {
       return InterceptorResult::Continue;
+    }
+
+    // Override this for remote authentication or other asynchronous policy
+    // checks. Invoke complete exactly once; it may be invoked from any thread.
+    // The default preserves existing synchronous interceptors.
+    virtual void async_handle_request(HttpContext& ctx, RequestCompletion complete)
+    {
+      complete(handle_request(ctx));
     }
 
     /**

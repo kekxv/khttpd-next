@@ -35,23 +35,24 @@ mkdir my-khttpd-app && cd my-khttpd-app
 ```python
 module(name = "my-khttpd-app", version = "0.1.0")
 
-bazel_dep(name = "platforms", version = "1.0.0")
-bazel_dep(name = "rules_cc", version = "0.2.13")
-bazel_dep(name = "fmt", version = "12.0.0")
-bazel_dep(name = "boost", version = "1.89.0.bcr.2")
-bazel_dep(name = "boost.asio", version = "1.89.0.bcr.2")
-bazel_dep(name = "boost.beast", version = "1.89.0.bcr.2")
-bazel_dep(name = "boost.json", version = "1.89.0.bcr.2")
-bazel_dep(name = "boost.filesystem", version = "1.89.0.bcr.2")
-bazel_dep(name = "boost.url", version = "1.89.0.bcr.2")
-bazel_dep(name = "boost.uuid", version = "1.89.0.bcr.2")
-bazel_dep(name = "boringssl", version = "0.20251110.0")
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "rules_cc", version = "0.2.20")
+bazel_dep(name = "fmt", version = "12.1.0")
+bazel_dep(name = "boost", version = "1.90.0.bcr.1")
+bazel_dep(name = "boost.asio", version = "1.90.0.bcr.1")
+bazel_dep(name = "boost.beast", version = "1.90.0.bcr.1")
+bazel_dep(name = "boost.json", version = "1.90.0.bcr.1")
+bazel_dep(name = "boost.filesystem", version = "1.90.0.bcr.1")
+bazel_dep(name = "boost.url", version = "1.90.0.bcr.1")
+bazel_dep(name = "boost.uuid", version = "1.90.0.bcr.1")
+bazel_dep(name = "boringssl", version = "0.20260616.0")
+bazel_dep(name = "spdlog", version = "1.17.0")
 
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 http_archive(
     name = "khttpd",
-    strip_prefix = "khttpd-0.1.0",
-    url = "https://github.com/ClangTools/khttpd/archive/refs/tags/v0.1.0.tar.gz",
+    strip_prefix = "khttpd-0.3.0",
+    url = "https://github.com/ClangTools/khttpd/archive/refs/tags/v0.3.0.tar.gz",
 )
 ```
 
@@ -87,6 +88,9 @@ int main()
 
     auto server = std::make_shared<khttpd::framework::Server>(
         tcp::endpoint{address, port}, "web_root", threads);
+
+    // 普通 JSON/form 路由的 body 默认最多 16 MiB，可按服务需要调整。
+    server->set_max_buffered_request_body_size(32ULL * 1024 * 1024);
 
     auto& router = server->get_http_router();
 
@@ -140,6 +144,12 @@ curl http://localhost:8080/hello/World
 curl -X POST -H "Content-Type: application/json" \
      -d '{"msg":"hi"}' http://localhost:8080/api/echo
 # {"msg":"hi"}
+```
+
+框架开发与回归测试：
+
+```bash
+bazel test //framework/... --test_output=errors
 ```
 
 ## 下一步

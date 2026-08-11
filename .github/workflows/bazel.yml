@@ -61,7 +61,7 @@ jobs:
 
       - name: Bazel Test
         run: |
-          bazel test framework/... --test_output=errors --test_verbose_timeout_warnings --verbose_failures
+          bazel test //framework/... --test_output=errors --test_verbose_timeout_warnings --verbose_failures
   example:
     needs: build
     strategy:
@@ -108,7 +108,10 @@ jobs:
   release:
     needs: [build, example]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.repository == 'ClangTools/khttpd' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    outputs:
+      tag_name: ${{ steps.version.outputs.tag_name }}
+      release_created: ${{ steps.check_tag.outputs.exists == 'false' }}
     permissions:
       contents: write
     steps:
@@ -122,6 +125,7 @@ jobs:
         run: |
           VERSION=$(grep -oP 'version\s*=\s*"\K[^"]+' MODULE.bazel | head -1)
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag_name=v${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Found version: ${VERSION}"
 
       - name: Check if tag exists
@@ -153,3 +157,12 @@ jobs:
           name: Release v${{ steps.version.outputs.version }}
           generate_release_notes: true
           draft: false
+
+  publish_to_bcr:
+    name: Publish release to BCR
+    needs: release
+    if: github.repository == 'ClangTools/khttpd' && needs.release.outputs.release_created == 'true'
+    uses: ./.github/workflows/publish_to_bcr.yml
+    with:
+      tag_name: ${{ needs.release.outputs.tag_name }}
+    secrets: inherit

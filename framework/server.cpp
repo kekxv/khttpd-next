@@ -95,6 +95,16 @@ namespace khttpd::framework
     return acceptor_.local_endpoint();
   }
 
+  void Server::set_max_buffered_request_body_size(std::uint64_t bytes)
+  {
+    max_buffered_request_body_size_.store(bytes, std::memory_order_relaxed);
+  }
+
+  std::uint64_t Server::get_max_buffered_request_body_size() const
+  {
+    return max_buffered_request_body_size_.load(std::memory_order_relaxed);
+  }
+
   void Server::run()
   {
     spdlog::info("Server listening on {}:{}", acceptor_.local_endpoint().address().to_string(),
@@ -140,7 +150,8 @@ namespace khttpd::framework
     }
     else
     {
-      std::make_shared<HttpSession>(std::move(socket), http_router_, websocket_router_, web_root_, canonical_web_root_)->run();
+      std::make_shared<HttpSession>(std::move(socket), http_router_, websocket_router_, web_root_,
+                                    canonical_web_root_, get_max_buffered_request_body_size())->run();
     }
 
     if (acceptor_.is_open())

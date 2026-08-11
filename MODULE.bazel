@@ -1,6 +1,6 @@
 module(
     name = "khttpd",
-    version = "0.2.0",
+    version = "0.3.0",
 )
 
 bazel_dep(name = "platforms", version = "1.1.0")
@@ -11,7 +11,7 @@ bazel_dep(name = "rules_perl", version = "1.1.1")
 bazel_dep(name = "fmt", version = "12.1.0")
 bazel_dep(name = "googletest", version = "1.17.0.bcr.2")
 bazel_dep(name = "sqlite3", version = "3.53.2")
-bazel_dep(name = "openssl", version = "3.5.5.bcr.4")
+bazel_dep(name = "openssl", version = "4.0.1.bcr.0")
 bazel_dep(name = "boringssl", version = "0.20260616.0")
 bazel_dep(name = "boost", version = "1.90.0.bcr.1")
 bazel_dep(name = "boost.asio", version = "1.90.0.bcr.1")

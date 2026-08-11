@@ -44,6 +44,24 @@ Request → Interceptor1.handle_request → Interceptor2.handle_request → Hand
 - **前置拦截器**：按注册**正序**执行
 - **后置拦截器**：按注册**逆序**执行（洋葱模型）
 - 任一前置返回 `Stop` → 跳过剩余前置和 handler → 执行全部后置
+- WebSocket Upgrade 在握手前也执行这条链，因此可复用 HTTP 鉴权
+
+远程鉴权可覆盖异步入口，完成回调可以从任意线程调用，但必须恰好调用一次：
+
+```cpp
+void async_handle_request(HttpContext& ctx, RequestCompletion complete) override {
+    auth_client.check(ctx.get_header("Authorization"),
+      [&ctx, complete = std::move(complete)](bool allowed) mutable {
+        if (!allowed) {
+            ctx.set_status(http::status::unauthorized);
+            ctx.set_body("Unauthorized");
+        }
+        complete(allowed ? InterceptorResult::Continue : InterceptorResult::Stop);
+      });
+}
+```
+
+做可信 `X-Forwarded-For` 解析时，应先用 `ctx.peer_endpoint()` 判断直连 peer 是否属于受信代理网段；IP 限流的默认 key 应使用 `ctx.peer_address()`，不能直接信任请求头。
 
 ### 上下文数据传递
 
@@ -122,9 +140,10 @@ router.set_unknown_exception_handler([](HttpContext& ctx) {
 auto& ws_router = server->get_websocket_router();
 
 ws_router.add_handler(
-    "/chat",
+    "/chat/:room",
     // on_open
     [](WebsocketContext& ctx) {
+        auto room = ctx.get_path_param("room").value_or("lobby");
         ctx.send("Welcome to the chat!");
     },
     // on_message
@@ -141,6 +160,28 @@ ws_router.add_handler(
     }
 );
 ```
+
+WebSocket 路由和 HTTP 路由一样支持动态参数。最后一个参数可以包含 `/`，因此 `/gateway/:target` 能匹配 `/gateway/orders/ws/v1`。静态路由始终优先于动态路由。
+
+### 握手信息与帧类型
+
+```cpp
+ws_router.add_handler("/gateway/:target",
+    [](WebsocketContext& ctx) {
+        const auto& request = ctx.handshake(); // target/path/headers/query/subprotocols
+        auto authorization = ctx.get_header("Authorization");
+        auto cookies = ctx.get_headers("Cookie"); // 保留重复字段
+        auto trace = ctx.get_query_param("trace");
+    },
+    [](WebsocketContext& ctx) {
+        if (ctx.frame.type == WebsocketFrameType::binary) {
+            // payload 是原始字节，可包含 \0；不会转成文本帧。
+            ctx.send(ctx.frame);
+        }
+    });
+```
+
+`WebsocketFrame` 还可表示 ping、pong 和 close；close 帧包含 `close_code` 与 `close_reason`。
 
 ### 广播消息
 
@@ -188,6 +229,8 @@ ChatController::create()->register_routes(ws_router);
 
 ## 分块流式响应
 
+`HttpContext::chunked()` 适合服务端逐块生成响应，但请求体仍属于普通缓冲模型。需要流式上传、下载或代理时，应使用下一节的 `router.stream()`。
+
 ```cpp
 router.get("/stream/:count", [](HttpContext& ctx) {
     int count = std::stoi(ctx.get_path_param("count").value_or("10"));
@@ -206,6 +249,42 @@ router.get("/stream/:count", [](HttpContext& ctx) {
 ### 写入控制
 
 `WriteHandler` 返回 `false` 时停止写入（客户端已断开）。
+
+---
+
+## 双向 HTTP 流与大文件代理
+
+普通 JSON、form 和 multipart handler 需要完整请求体，默认最大 16 MiB。可以全局调整：
+
+```cpp
+server->set_max_buffered_request_body_size(32ULL * 1024 * 1024);
+```
+
+带 `Content-Length` 的超限请求会在读取 body、发送 `100 Continue` 之前返回 413；chunked 请求在累计越界时返回 413。大文件不要简单调高该上限，应注册流式路由：
+
+```cpp
+router.stream("/gateway/:target", http::verb::post,
+  [](HttpContext& ctx,
+     std::shared_ptr<HttpRequestStream> request,
+     std::shared_ptr<HttpResponseStream> response,
+     HttpStreamComplete)
+  {
+    client::HttpClientStream::RequestHead head{
+      ctx.method(), "/", ctx.get_request().version()};
+    for (const auto& field : ctx.get_request())
+      head.insert(field.name_string(), field.value());
+
+    auto proxy = std::make_shared<client::HttpProxySession>(
+      request, response, 64 * 1024);
+    proxy->start("http://upstream.internal/upload", std::move(head));
+  });
+```
+
+请求和响应各自只保持固定缓冲区，前一次写完成后才读取下一块。该模型支持 Content-Length、chunked、206 Range 响应和 hop-by-hop header 过滤。任一侧错误或取消时会联动取消其他方向。
+
+若上游已提前拒绝请求，可调用 `request->cancel_read()` 或 `response->cancel_request_body()`。这只终止入站请求体读取，响应仍可正常写回；为避免未消费字节污染下一条请求，该连接不会再 keep-alive。
+
+`HttpClientStream` 和 `HttpProxySession` 同时支持 `http://` 与 `https://`，两种传输都保持固定缓冲模型。默认 TLS context 使用系统信任库并校验证书；私有 CA 可通过接受 `ssl::context&` 的构造函数注入。
 
 ---
 

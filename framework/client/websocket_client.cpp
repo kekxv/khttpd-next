@@ -14,8 +14,10 @@ namespace khttpd::framework::client
     bool alive = true;
     bool close_notified = false;
     MessageHandler on_message;
+    FrameHandler on_frame;
     ErrorHandler on_error;
     CloseHandler on_close;
+    std::string negotiated_subprotocol;
   };
 
   // ==========================================
@@ -26,7 +28,7 @@ namespace khttpd::framework::client
     std::weak_ptr<WebsocketClient::State> state_;
     std::string host_;
     beast::flat_buffer buffer_;
-    std::deque<std::string> write_queue_; // 写队列
+    std::deque<WebsocketFrame> write_queue_;
     bool is_writing_ = false;
     bool closing_ = false;
     bool close_started_ = false;
@@ -42,28 +44,40 @@ namespace khttpd::framework::client
                      const std::map<std::string, std::string>& headers, WebsocketClient::ConnectCallback cb) = 0;
     virtual void close() = 0;
 
+    void set_negotiated_subprotocol(const beast::string_view value)
+    {
+      if (auto state = state_.lock())
+      {
+        std::lock_guard<std::mutex> lock{state->mutex};
+        if (state->alive) state->negotiated_subprotocol.assign(value.data(), value.size());
+      }
+    }
+
     // 核心发送逻辑：入队
-    void queue_write(std::string message)
+    void queue_write(WebsocketFrame frame)
     {
       net::post(get_executor(), beast::bind_front_handler(
-                  &WebsocketSessionImpl::on_queue_write, shared_from_this(), std::move(message)));
+                  &WebsocketSessionImpl::on_queue_write, shared_from_this(), std::move(frame)));
     }
 
   protected:
     virtual net::any_io_executor get_executor() = 0;
     virtual void do_write_from_queue() = 0;
 
-    void notify_message(const std::string& message)
+    void notify_frame(const WebsocketFrame& frame)
     {
       auto state = state_.lock();
       if (!state) return;
-      WebsocketClient::MessageHandler handler;
+      WebsocketClient::FrameHandler frame_handler;
+      WebsocketClient::MessageHandler message_handler;
       {
         std::lock_guard<std::mutex> lock{state->mutex};
         if (!state->alive) return;
-        handler = state->on_message;
+        frame_handler = state->on_frame;
+        message_handler = state->on_message;
       }
-      if (handler) handler(message);
+      if (frame_handler) frame_handler(frame);
+      if (frame.type == WebsocketFrameType::text && message_handler) message_handler(frame.payload);
     }
 
     void notify_error(beast::error_code ec)
@@ -107,10 +121,10 @@ namespace khttpd::framework::client
       if (callback) callback(ec);
     }
 
-    void on_queue_write(std::string message)
+    void on_queue_write(WebsocketFrame frame)
     {
       if (closing_) return;
-      write_queue_.push_back(std::move(message));
+      write_queue_.push_back(std::move(frame));
       if (!is_writing_)
       {
         is_writing_ = true;
@@ -119,7 +133,7 @@ namespace khttpd::framework::client
     }
 
     // 通用的读循环处理
-    void process_read_result(beast::error_code ec, std::size_t bytes)
+    void process_read_result(beast::error_code ec, std::size_t bytes, bool text, const websocket::close_reason& reason)
     {
       boost::ignore_unused(bytes);
       if (ec)
@@ -133,6 +147,8 @@ namespace khttpd::framework::client
           ec == boost::asio::error::bad_descriptor ||
           ec == boost::asio::error::operation_aborted)
         {
+          if (ec == websocket::error::closed)
+            notify_frame({WebsocketFrameType::close, {}, static_cast<uint16_t>(reason.code), reason.reason.c_str()});
           notify_close();
         }
         else
@@ -142,7 +158,8 @@ namespace khttpd::framework::client
         return;
       }
 
-      notify_message(beast::buffers_to_string(buffer_.data()));
+      notify_frame({text ? WebsocketFrameType::text : WebsocketFrameType::binary,
+                    beast::buffers_to_string(buffer_.data())});
       buffer_.consume(buffer_.size());
     }
 
@@ -182,6 +199,7 @@ namespace khttpd::framework::client
   class PlainWebsocketSession : public WebsocketSessionImpl
   {
     websocket::stream<beast::tcp_stream> ws_;
+    websocket::response_type handshake_response_;
     tcp::resolver resolver_;
     WebsocketClient::ConnectCallback connect_cb_;
 
@@ -233,9 +251,14 @@ namespace khttpd::framework::client
   protected:
     void do_write_from_queue() override
     {
-      ws_.async_write(net::buffer(write_queue_.front()),
-                      beast::bind_front_handler(&PlainWebsocketSession::on_write,
-                                                std::static_pointer_cast<PlainWebsocketSession>(shared_from_this())));
+      const auto& frame = write_queue_.front();
+      if (frame.type == WebsocketFrameType::ping)
+        return ws_.async_ping(websocket::ping_data(frame.payload), [self = std::static_pointer_cast<PlainWebsocketSession>(shared_from_this())](beast::error_code ec) { self->process_write_result(ec); });
+      if (frame.type == WebsocketFrameType::pong)
+        return ws_.async_pong(websocket::ping_data(frame.payload), [self = std::static_pointer_cast<PlainWebsocketSession>(shared_from_this())](beast::error_code ec) { self->process_write_result(ec); });
+      ws_.text(frame.type == WebsocketFrameType::text);
+      ws_.async_write(net::buffer(frame.payload), beast::bind_front_handler(&PlainWebsocketSession::on_write,
+        std::static_pointer_cast<PlainWebsocketSession>(shared_from_this())));
     }
 
   private:
@@ -265,7 +288,7 @@ namespace khttpd::framework::client
         for (const auto& h : headers) req.set(h.first, h.second);
       }));
 
-      ws_.async_handshake(host_, target,
+      ws_.async_handshake(handshake_response_, host_, target,
                           beast::bind_front_handler(&PlainWebsocketSession::on_handshake,
                                                     std::static_pointer_cast<PlainWebsocketSession>(
                                                       shared_from_this())));
@@ -275,6 +298,7 @@ namespace khttpd::framework::client
     {
       if (closing_) return;
       if (ec) return fail(ec);
+      set_negotiated_subprotocol(handshake_response_[beast::http::field::sec_websocket_protocol]);
       notify_connect(connect_cb_, ec);
       do_read();
     }
@@ -288,7 +312,7 @@ namespace khttpd::framework::client
 
     void on_read(beast::error_code ec, std::size_t bytes)
     {
-      process_read_result(ec, bytes);
+      process_read_result(ec, bytes, ws_.got_text(), ws_.reason());
       if (!ec) do_read();
     }
 
@@ -309,6 +333,7 @@ namespace khttpd::framework::client
   class SslWebsocketSession : public WebsocketSessionImpl
   {
     websocket::stream<beast::ssl_stream<beast::tcp_stream>> ws_;
+    websocket::response_type handshake_response_;
     tcp::resolver resolver_;
     WebsocketClient::ConnectCallback connect_cb_;
 
@@ -365,9 +390,14 @@ namespace khttpd::framework::client
   protected:
     void do_write_from_queue() override
     {
-      ws_.async_write(net::buffer(write_queue_.front()),
-                      beast::bind_front_handler(&SslWebsocketSession::on_write,
-                                                std::static_pointer_cast<SslWebsocketSession>(shared_from_this())));
+      const auto& frame = write_queue_.front();
+      if (frame.type == WebsocketFrameType::ping)
+        return ws_.async_ping(websocket::ping_data(frame.payload), [self = std::static_pointer_cast<SslWebsocketSession>(shared_from_this())](beast::error_code ec) { self->process_write_result(ec); });
+      if (frame.type == WebsocketFrameType::pong)
+        return ws_.async_pong(websocket::ping_data(frame.payload), [self = std::static_pointer_cast<SslWebsocketSession>(shared_from_this())](beast::error_code ec) { self->process_write_result(ec); });
+      ws_.text(frame.type == WebsocketFrameType::text);
+      ws_.async_write(net::buffer(frame.payload), beast::bind_front_handler(&SslWebsocketSession::on_write,
+        std::static_pointer_cast<SslWebsocketSession>(shared_from_this())));
     }
 
   private:
@@ -405,7 +435,7 @@ namespace khttpd::framework::client
         for (const auto& h : headers) req.set(h.first, h.second);
       }));
 
-      ws_.async_handshake(host_, target,
+      ws_.async_handshake(handshake_response_, host_, target,
                           beast::bind_front_handler(&SslWebsocketSession::on_handshake,
                                                     std::static_pointer_cast<SslWebsocketSession>(shared_from_this())));
     }
@@ -414,6 +444,7 @@ namespace khttpd::framework::client
     {
       if (closing_) return;
       if (ec) return fail(ec);
+      set_negotiated_subprotocol(handshake_response_[beast::http::field::sec_websocket_protocol]);
       notify_connect(connect_cb_, ec);
       do_read();
     }
@@ -427,7 +458,7 @@ namespace khttpd::framework::client
 
     void on_read(beast::error_code ec, std::size_t bytes)
     {
-      process_read_result(ec, bytes);
+      process_read_result(ec, bytes, ws_.got_text(), ws_.reason());
       if (!ec) do_read();
     }
 
@@ -489,6 +520,25 @@ namespace khttpd::framework::client
     headers_[key] = value;
   }
 
+  void WebsocketClient::set_subprotocols(const std::vector<std::string>& subprotocols)
+  {
+    std::string value;
+    for (const auto& protocol : subprotocols)
+    {
+      if (protocol.empty()) continue;
+      if (!value.empty()) value += ", ";
+      value += protocol;
+    }
+    if (value.empty()) headers_.erase("Sec-WebSocket-Protocol");
+    else headers_["Sec-WebSocket-Protocol"] = std::move(value);
+  }
+
+  std::string WebsocketClient::negotiated_subprotocol() const
+  {
+    std::lock_guard<std::mutex> lock{state_->mutex};
+    return state_->negotiated_subprotocol;
+  }
+
   void WebsocketClient::connect(const std::string& url, ConnectCallback callback)
   {
     auto url_result = boost::urls::parse_uri(url);
@@ -501,8 +551,15 @@ namespace khttpd::framework::client
     std::string host = u.host();
     std::string scheme = u.scheme();
     std::string port = u.port();
-    std::string target = u.encoded_path().data();
+    std::string target(u.encoded_target());
     if (target.empty()) target = "/";
+    else if (target.front() == '?') target.insert(target.begin(), '/');
+
+    if (scheme != "ws" && scheme != "wss")
+    {
+      if (callback) callback(make_error_code(boost::system::errc::operation_not_supported));
+      return;
+    }
 
     if (port.empty()) port = (scheme == "wss") ? "443" : "80";
 
@@ -516,6 +573,7 @@ namespace khttpd::framework::client
       {
         std::lock_guard<std::mutex> lock{state_->mutex};
         state_->close_notified = false;
+        state_->negotiated_subprotocol.clear();
       }
       auto s = std::make_shared<SslWebsocketSession>(ioc_, *ssl_ctx_ptr_, state_);
       session_ = s;
@@ -526,6 +584,7 @@ namespace khttpd::framework::client
       {
         std::lock_guard<std::mutex> lock{state_->mutex};
         state_->close_notified = false;
+        state_->negotiated_subprotocol.clear();
       }
       auto s = std::make_shared<PlainWebsocketSession>(ioc_, state_);
       session_ = s;
@@ -535,9 +594,14 @@ namespace khttpd::framework::client
 
   void WebsocketClient::send(const std::string& message)
   {
+    send({WebsocketFrameType::text, message});
+  }
+
+  void WebsocketClient::send(WebsocketFrame frame)
+  {
     if (session_)
     {
-      session_->queue_write(message);
+      session_->queue_write(std::move(frame));
     }
   }
 
@@ -554,6 +618,12 @@ namespace khttpd::framework::client
   {
     std::lock_guard<std::mutex> lock{state_->mutex};
     state_->on_message = std::move(handler);
+  }
+
+  void WebsocketClient::set_on_frame(FrameHandler handler)
+  {
+    std::lock_guard<std::mutex> lock{state_->mutex};
+    state_->on_frame = std::move(handler);
   }
 
   void WebsocketClient::set_on_error(ErrorHandler handler)

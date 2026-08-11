@@ -21,6 +21,8 @@ Server(const tcp::endpoint& endpoint, std::string web_root, int num_threads = 1)
 | `get_http_router()` | `HttpRouter&` | 获取 HTTP 路由器引用，用于注册路由 |
 | `get_websocket_router()` | `WebsocketRouter&` | 获取 WebSocket 路由器引用 |
 | `add_interceptor(interceptor)` | `void` | 添加全局请求/响应拦截器 |
+| `set_max_buffered_request_body_size(bytes)` | `void` | 设置普通缓冲路由的请求体上限；默认 16 MiB，仅影响之后建立的连接 |
+| `get_max_buffered_request_body_size()` | `std::uint64_t` | 获取当前普通缓冲路由请求体上限 |
 | `run()` | `void` | 启动服务器（阻塞调用，直到收到 SIGINT/SIGTERM） |
 | `stop()` | `void` | 停止服务器，关闭 acceptor 和线程池 |
 
@@ -58,6 +60,8 @@ server->run();
 | `get_path_param(key)` | `std::optional<std::string>` | 路径参数，如 `/users/:id` 中的 `id` |
 | `get_header(name)` | `std::optional<std::string>` | 请求头（支持 `http::field` 枚举和字符串） |
 | `get_headers(name)` | `std::optional<std::vector<std::string>>` | 同名请求头列表 |
+| `peer_endpoint()` | `const std::optional<tcp::endpoint>&` | TCP 真实对端；不受 `X-Forwarded-For` 伪造影响 |
+| `peer_address()` | `std::optional<ip::address>` | TCP 真实对端地址，适合可信代理判断和 IP 限流 |
 
 ### Cookie 操作
 
@@ -142,8 +146,21 @@ struct MultipartFile {
 | `put(path, handler)` | 注册 PUT 路由 |
 | `del(path, handler)` | 注册 DELETE 路由 |
 | `options(path, handler)` | 注册 OPTIONS 路由 |
+| `stream(path, method, handler)` | 注册在读取完整 body 前分发的流式路由 |
+| `async_route(path, method, handler)` | 注册异步路由；handler 完成时调用一次 `complete()` |
 
 `handler` 签名：`void(HttpContext&)`
+
+流式 `handler` 签名：
+
+```cpp
+void(HttpContext&,
+     std::shared_ptr<HttpRequestStream>,
+     std::shared_ptr<HttpResponseStream>,
+     HttpStreamComplete)
+```
+
+普通 handler 仍使用 `string_body`，超过 Server 配置上限会返回 413。流式路由使用固定缓冲区读取，不受该缓冲上限约束。
 
 ### 路由语法
 
@@ -190,7 +207,7 @@ using WebsocketErrorHandler  = std::function<void(WebsocketContext&)>;
 
 | 方法 | 说明 |
 |------|------|
-| `add_handler(path, on_open, on_message, on_close, on_error)` | 注册 WebSocket 路径的所有生命周期处理器。`path` 为精确匹配（不支持动态参数） |
+| `add_handler(path, on_open, on_message, on_close, on_error)` | 注册 WebSocket 生命周期处理器；支持 `/gateway/:target` 动态参数，最后一个参数可匹配多层路径 |
 | `dispatch_open(path, ctx)` | 分发 open 事件 |
 | `dispatch_message(path, ctx)` | 分发 message 事件 |
 | `dispatch_close(path, ctx)` | 分发 close 事件 |
@@ -209,6 +226,7 @@ using WebsocketErrorHandler  = std::function<void(WebsocketContext&)>;
 | `is_text` | `bool` | 消息是否为文本（仅 message 事件有效） |
 | `error_code` | `beast::error_code` | 错误码（仅 error/close 事件有效） |
 | `path` | `std::string` | 连接路径 |
+| `frame` | `WebsocketFrame` | 当前帧的类型、原始 payload、关闭码和关闭原因 |
 | `session_weak_ptr` | `weak_ptr<WebsocketSession>` | 会话的弱引用 |
 
 ### 方法
@@ -216,6 +234,11 @@ using WebsocketErrorHandler  = std::function<void(WebsocketContext&)>;
 | 方法 | 说明 |
 |------|------|
 | `send(msg, is_text)` | 发送消息给客户端 |
+| `send(frame)` | 按 `WebsocketFrameType` 发送 text、binary、ping、pong 或 close 帧 |
+| `handshake()` | 获取原始 target、路径、重复 headers、query 参数和客户端请求的 subprotocol 列表 |
+| `get_header(name)` / `get_headers(name)` | 大小写不敏感地读取握手 header；复数版本保留重复字段 |
+| `get_query_param(key)` | 读取握手查询参数 |
+| `get_path_param(key)` | 读取 WebSocket 动态路由参数 |
 | `set_attribute(key, value)` | 存储扩展数据 |
 | `get_attribute_as<T>(key)` | 获取并类型转换扩展数据 |
 
@@ -266,9 +289,11 @@ enum class InterceptorResult { Continue, Stop };
 | 方法 | 默认返回 | 调用时机 |
 |------|----------|----------|
 | `handle_request(ctx)` | `Continue` | 路由处理前，按添加顺序执行 |
+| `async_handle_request(ctx, complete)` | 调用同步 `handle_request` | 异步前置检查；完成时调用一次 `complete(result)` |
 | `handle_response(ctx)` | 空 | 响应生成后，按添加**逆序**执行 |
 
 返回 `Stop` 时中断后续拦截器和路由处理器，直接执行后置拦截器。
+HTTP 与 WebSocket Upgrade 都会执行同一条前置拦截器链。
 
 ---
 
@@ -357,6 +382,56 @@ public:
 
 ---
 
+## HTTP 流式 API
+
+### HttpRequestStream
+
+| 方法 | 说明 |
+|------|------|
+| `async_read_some(buffer, callback)` | 将下一段请求体读入调用方缓冲区；回调参数为 `(ec, bytes, done)` |
+| `cancel_read()` | 只取消请求体读取；响应通道仍可发送，连接随后以非 keep-alive 结束 |
+| `cancel()` | 取消读取并关闭对应连接 |
+
+同一个方向必须等待前一次回调完成后再发起下一次读取。
+
+### HttpResponseStream
+
+| 方法 | 说明 |
+|------|------|
+| `async_start(head, callback)` | 发送响应头；未指定 Content-Length/Chunked 时自动使用 chunked |
+| `async_write_some(buffer, callback)` | 发送一段响应体 |
+| `async_finish(callback)` | 完成响应体并写入终止块（如需要） |
+| `cancel_request_body()` | 只取消配对的请求体读取，保留响应通道 |
+| `cancel()` | 取消下游响应 |
+
+### HttpClientStream
+
+| 方法 | 说明 |
+|------|------|
+| `async_start(url, head, callback)` | 连接上游并发送请求头 |
+| `async_write_some(buffer, callback)` | 发送一段请求体 |
+| `async_finish_request(callback)` | 完成请求体 |
+| `async_read_response_head(callback)` | 读取上游响应头 |
+| `async_read_some(buffer, callback)` | 固定缓冲区读取响应体 |
+| `cancel()` | 取消解析、连接和未完成 I/O |
+
+流式客户端支持 `http://` 和 `https://`，TLS 传输仍使用同一套固定缓冲 serializer/parser。默认 context 校验系统信任库；也可通过 `HttpClientStream(ssl_context)` 或 `HttpClientStream(ioc, ssl_context)` 注入私有 CA 配置。
+客户端会跳过连续的 100/103 等 informational response，向调用方交付最终响应；HEAD 按响应头完成，不等待 `Content-Length` 指示的正文。
+
+### HttpProxySession
+
+`HttpProxySession` 把入站请求流、上游 `HttpClientStream` 和下游响应流串联起来。请求和响应方向都遵循“读一块、写一块、写完再读下一块”，从而形成自然背压。
+
+```cpp
+auto proxy = std::make_shared<client::HttpProxySession>(
+    request_stream, response_stream, 64 * 1024);
+proxy->start(upstream_url, std::move(request_head), complete_callback);
+```
+
+代理会过滤 hop-by-hop headers，透明保留 Range、Content-Range、Accept-Ranges、ETag 等端到端字段，并在任一侧失败时取消其余方向。
+
+---
+
 ## HttpClient
 
 ### 构造函数
@@ -419,6 +494,10 @@ API_CALL(http::verb::get, "/users/:id", get_user,
 | `send(message)` | 发送消息（线程安全） |
 | `close()` | 关闭连接 |
 | `set_header(key, value)` | 设置握手头 |
+| `set_subprotocols(protocols)` | 设置 `Sec-WebSocket-Protocol` 请求列表 |
+| `negotiated_subprotocol()` | 返回握手响应中服务端最终选择的子协议 |
 | `set_on_message(handler)` | 设置消息回调 |
+| `set_on_frame(handler)` | 设置保留 text/binary/control 类型的帧回调 |
 | `set_on_error(handler)` | 设置错误回调 |
 | `set_on_close(handler)` | 设置关闭回调 |
+| `send(frame)` | 发送带明确类型和关闭信息的 `WebsocketFrame` |

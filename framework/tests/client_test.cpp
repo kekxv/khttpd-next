@@ -1,4 +1,5 @@
 #include "framework/client/http_client.hpp"
+#include "framework/client/http_client_stream.hpp"
 #include "framework/client/websocket_client.hpp"
 #include "framework/client/api_macros.hpp"
 #include "framework/client/host_pool.hpp"
@@ -134,9 +135,11 @@ private:
   {
     beast::flat_buffer buffer;
     boost::system::error_code ec;
-    http::request<http::string_body> req;
-    http::read(socket, buffer, req, ec);
+    http::request_parser<http::string_body> parser;
+    parser.body_limit(8 * 1024 * 1024);
+    http::read(socket, buffer, parser, ec);
     if (ec) return;
+    auto req = parser.release();
 
     http::response<http::string_body> res{http::status::ok, req.version()};
     res.set(http::field::server, "khttpd-local-echo");
@@ -162,6 +165,11 @@ private:
     else if (target.rfind("/post", 0) == 0)
     {
       res.body() = "{\"data\":" + req.body() + "}";
+    }
+    else if (target.rfind("/stream", 0) == 0)
+    {
+      res.set(http::field::content_type, "application/octet-stream");
+      res.body() = req.body();
     }
     else
     {
@@ -608,6 +616,58 @@ TEST(HttpClientLocalTest, SyncRequestTimeoutClosesStalledConnection)
 // WebSocket 测试
 // ==========================================
 
+TEST(HttpClientStreamTest, StreamsRequestAndResponseWithBoundedBuffers)
+{
+  LocalHttpEchoServer server;
+  net::io_context ioc;
+  auto client = std::make_shared<HttpClientStream>(ioc);
+  auto payload = std::make_shared<std::string>(2 * 1024 * 1024 + 31, 's');
+  auto offset = std::make_shared<std::size_t>(0);
+  auto received = std::make_shared<std::size_t>(0);
+  auto write_next = std::make_shared<std::function<void()>>();
+  auto read_next = std::make_shared<std::function<void()>>();
+  auto read_buffer = std::make_shared<std::array<char, 24 * 1024>>();
+  bool completed = false;
+
+  HttpClientStream::RequestHead head{http::verb::post, "/stream", 11};
+  head.content_length(payload->size());
+  *read_next = [client, received, read_buffer, read_next, &completed]
+  {
+    client->async_read_some(net::buffer(*read_buffer),
+      [client, received, read_buffer, read_next, &completed](beast::error_code ec, std::size_t n, bool done)
+      {
+        ASSERT_FALSE(ec) << ec.message(); *received += n;
+        if (!done) return (*read_next)();
+        completed = true;
+      });
+  };
+  *write_next = [client, payload, offset, write_next, read_next]
+  {
+    if (*offset == payload->size())
+    {
+      return client->async_finish_request([client, read_next](beast::error_code ec)
+      {
+        ASSERT_FALSE(ec) << ec.message();
+        client->async_read_response_head([read_next](beast::error_code head_ec, HttpClientStream::ResponseHead head)
+        {
+          ASSERT_FALSE(head_ec) << head_ec.message(); EXPECT_EQ(head.result(), http::status::ok); (*read_next)();
+        });
+      });
+    }
+    const auto size = std::min<std::size_t>(32 * 1024, payload->size() - *offset);
+    const auto chunk = net::buffer(payload->data() + *offset, size);
+    client->async_write_some(chunk, [offset, size, write_next](beast::error_code ec)
+    {
+      ASSERT_FALSE(ec) << ec.message(); *offset += size; (*write_next)();
+    });
+  };
+  client->async_start(server.base_url() + "/stream", std::move(head),
+    [write_next](beast::error_code ec) { ASSERT_FALSE(ec) << ec.message(); (*write_next)(); });
+  ioc.run();
+  EXPECT_TRUE(completed);
+  EXPECT_EQ(*received, payload->size());
+}
+
 class WebsocketTest : public ::testing::Test
 {
 protected:
@@ -704,6 +764,36 @@ TEST_F(WebsocketTest, WssEchoAndWriteQueue)
   EXPECT_FALSE(has_error) << "Should not encounter network errors";
   EXPECT_EQ(received_count, message_count);
   EXPECT_TRUE(closed_gracefully) << "on_close should be triggered";
+}
+
+TEST_F(WebsocketTest, FrameHandlerPreservesBinaryTypeAndPayload)
+{
+  LocalWebSocketEchoServer server;
+  bool connected = false;
+  bool received = false;
+  boost::asio::steady_timer timer(ioc, std::chrono::seconds(5));
+
+  ws_client->set_on_frame([&](const khttpd::framework::WebsocketFrame& frame)
+  {
+    if (frame.type != khttpd::framework::WebsocketFrameType::binary) return;
+    received = frame.payload == std::string("\x00\x01\xff", 3);
+    ws_client->close();
+    timer.cancel();
+  });
+  ws_client->connect(server.url(), [&](boost::beast::error_code ec)
+  {
+    ASSERT_FALSE(ec) << ec.message();
+    connected = true;
+    ws_client->send({khttpd::framework::WebsocketFrameType::binary, std::string("\x00\x01\xff", 3)});
+  });
+  timer.async_wait([&](boost::system::error_code ec)
+  {
+    if (!ec) { ws_client->close(); ADD_FAILURE() << "Frame echo timed out"; }
+  });
+  ioc.run();
+
+  EXPECT_TRUE(connected);
+  EXPECT_TRUE(received);
 }
 
 TEST_F(WebsocketTest, ConnectFailure)

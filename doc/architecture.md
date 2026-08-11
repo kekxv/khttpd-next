@@ -52,8 +52,14 @@ Client Request
        │
        ▼
 ┌─────────────┐
-│ HttpSession │  async_read 读取 HTTP 请求
+│ HttpSession │  async_read_header 先读取请求行和 headers
 └──────┬──────┘
+       │
+       ▼
+┌──────────────────┐
+│ Header Route     │  流式路由 → buffer_body 固定缓冲读取
+│ Decision         │  普通路由 → 在可配置上限内累计 body
+└──────┬───────────┘
        │
        ▼
 ┌──────────────────┐
@@ -122,21 +128,33 @@ HTTP Request (Upgrade header)
 
 - 使用 **正则表达式** 解析动态路径参数
 - 按**特异性排序**：字面段多的路由优先，同数量下动态段少的优先
-- WebSocket 路由器仅支持精确路径匹配（不支持动态参数）
+- HTTP 与 WebSocket 路由均支持 `:param` 动态参数和特异性排序
+- WebSocket 最后一个动态参数可捕获剩余多层路径，例如 `/gateway/:target` 匹配 `/gateway/orders/ws/v1`
+- WebSocket 路由表使用共享锁读取、独占锁更新；热更新只影响后续分发
 
 ### 3. 响应发送
 
 - 普通响应：`beast::async_write` 异步发送
 - Chunked 流式响应：通过 `HttpContext::chunked()` 启用，内部将同步写入转换为异步写链
+- 双向 HTTP 流：`request_parser<buffer_body>` 与 `response<buffer_body>` 使用调用方固定缓冲区；每次 write 完成后才继续 read，形成背压
 - 静态文件：使用 Beast 的 `file_body` 零拷贝发送
 
 ### 4. 内存管理
 
 - `HttpSession` / `WebsocketSession` 由 `shared_ptr` 管理
-- `HttpContext` / `WebsocketContext` 为临时栈对象，生命周期仅限于单个请求/事件
+- 普通 JSON/form 路由保留完整 body，但由 `Server::set_max_buffered_request_body_size()` 控制上限（默认 16 MiB）
+- 流式路由、客户端和代理使用固定大小缓冲区，内存不随单个 body 大小线性增长
+- 流对象持有对应会话，异步操作完成或取消前不会悬空
 - 拦截器和异常处理器存储为 `shared_ptr` 在路由器中
 
-### 5. 静态文件安全
+### 5. WebSocket 帧与握手元数据
+
+- `WebsocketFrame` 统一表示 text、binary、ping、pong 和 close 帧
+- binary payload 使用 `std::string` 作为字节容器，但不会转换为文本，类型由 `frame.type` 明确保留
+- `WebsocketHandshakeRequest` 保留原始 target、path、重复 headers、query 参数和 subprotocol 请求列表
+- 写操作通过每连接串行队列执行，避免并发 `async_write`
+
+### 6. 静态文件安全
 
 - 使用 `boost::filesystem::canonical()` 规范化路径，防止 `../` 目录遍历
 - 规范化后校验路径仍在 `web_root` 内
@@ -160,6 +178,8 @@ framework/
 ├── io_context_pool.hpp         # IO 线程池（单例）
 ├── context/
 │   ├── http_context.hpp/cpp    # HTTP 请求/响应上下文
+│   ├── http_request_stream.hpp # 入站请求流接口
+│   ├── http_response_stream.hpp # 下游响应流接口
 │   └── websocket_context.hpp/cpp # WebSocket 上下文
 ├── router/
 │   ├── http_router.hpp/cpp     # HTTP 路由匹配与分发
@@ -168,6 +188,8 @@ framework/
 │   └── http_controller.hpp     # CRTP Controller + 路由宏
 ├── client/
 │   ├── http_client.hpp/cpp     # HTTP 客户端（同步/异步）
+│   ├── http_client_stream.hpp/cpp # 固定缓冲 HTTP 流客户端
+│   ├── http_proxy_session.hpp/cpp # 双向代理泵与背压
 │   ├── websocket_client.hpp/cpp # WebSocket 客户端
 │   └── macros.hpp              # API_CALL 宏
 ├── interceptor/

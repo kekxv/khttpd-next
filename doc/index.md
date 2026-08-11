@@ -7,8 +7,8 @@
 | [快速开始指南](quick-start.md) | 10 分钟搭建第一个 khttpd 服务 |
 | [API 参考文档](api-reference.md) | 完整 API 方法签名和参数说明 |
 | [架构指南](architecture.md) | 框架设计、请求流程、线程模型、扩展点 |
-| [高级功能](advanced.md) | 拦截器、异常处理、WebSocket、Cron、DI 容器、Cookie |
-| [HTTP 与 WebSocket 客户端](http-client.md) | 内置客户端 API、API_CALL 宏、WebSocket 客户端 |
+| [高级功能](advanced.md) | 拦截器、异常处理、动态 WebSocket、双向 HTTP 流、Cron、DI、Cookie |
+| [HTTP 与 WebSocket 客户端](http-client.md) | 缓冲/流式 HTTP 客户端、API_CALL 宏、WebSocket 帧客户端 |
 
 ## 按主题查找
 
@@ -32,6 +32,8 @@
 - 文件上传 → [API 参考](api-reference.md#表单与文件上传)
 - 设置响应 → [API 参考](api-reference.md#响应设置)
 - 分块流式响应 → [高级功能](advanced.md#分块流式响应)
+- 大文件双向流式代理 → [高级功能](advanced.md#双向-http-流与大文件代理)
+- 普通请求体 413 上限 → [API 参考](api-reference.md#server)
 - Cookie 操作 → [高级功能](advanced.md#cookie-操作)
 
 ### 中间件
@@ -50,6 +52,7 @@
 
 ### 客户端
 - HTTP 客户端 → [HTTP 客户端](http-client.md#http-客户端)
+- 流式 HTTP 客户端 → [HTTP 客户端](http-client.md#流式-http-客户端)
 - Oat++ 风格 API 定义 → [HTTP 客户端](http-client.md#oat-风格-api-定义)
 - 多 Host 权重分发 → [HTTP 客户端](http-client.md#多-host-权重分发)
 - API_CALL 宏 → [HTTP 客户端](http-client.md#api_call-宏自动生成客户端方法)

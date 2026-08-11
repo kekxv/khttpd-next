@@ -171,6 +171,32 @@ KHTTPD_API_CLIENT_END()
 
 ---
 
+## 流式 HTTP 客户端
+
+`HttpClient` 返回 `response<string_body>`，适合普通 API。大请求或响应应使用 `HttpClientStream`，由调用方提供固定大小缓冲区：
+
+```cpp
+#include "framework/client/http_client_stream.hpp"
+
+auto stream = std::make_shared<HttpClientStream>(ioc);
+HttpClientStream::RequestHead head{http::verb::post, "/upload", 11};
+head.chunked(true);
+
+stream->async_start("http://storage.internal/upload", std::move(head),
+  [stream](beast::error_code ec) {
+    // async_write_some(...) -> async_finish_request(...)
+    // -> async_read_response_head(...) -> async_read_some(...)
+  });
+```
+
+同一方向必须串行调用：等待当前 read/write 回调后再提交下一块。这既限制 in-flight 数据，也让 TCP 自然提供背压。调用 `cancel()` 会取消解析、连接和未完成 I/O。
+
+流式客户端同时支持 `http://` 和 `https://`，TLS 不会回退到全量缓存。默认构造函数使用系统信任库并校验证书；私有 CA 或测试环境可以使用 `HttpClientStream(ioc, ssl_context)` 注入自定义 context。
+
+缓冲和流式客户端都会连续消费上游 `100 Continue`、`103 Early Hints` 等 1xx 响应，并只返回最终响应。HEAD 请求在最终响应头后即完成，即使响应包含非零 `Content-Length` 也不会等待正文。
+
+---
+
 ## WebSocket 客户端
 
 ### 基本使用
@@ -187,6 +213,16 @@ ws->set_on_message([](const std::string& msg) {
     fmt::print("Received: {}\n", msg);
 });
 
+// 需要保留 text/binary/control 类型时使用帧回调。
+ws->set_on_frame([](const WebsocketFrame& frame) {
+    if (frame.type == WebsocketFrameType::binary) {
+        fmt::print("binary bytes: {}\n", frame.payload.size());
+    }
+});
+
+// 请求子协议；连接后可读取服务端最终选择的协议。
+ws->set_subprotocols({"chat.v1", "chat.v2"});
+
 ws->set_on_error([](beast::error_code ec) {
     if (ec != boost::asio::error::operation_aborted) {
         fmt::print(stderr, "WS Error: {}\n", ec.message());
@@ -198,8 +234,9 @@ ws->set_on_close([]() {
 });
 
 // 连接
-ws->connect("wss://echo.websocket.org", [](beast::error_code ec) {
+ws->connect("wss://echo.websocket.org", [ws](beast::error_code ec) {
     if (!ec) {
+        fmt::print("protocol: {}\n", ws->negotiated_subprotocol());
         fmt::print("Connected!\n");
     }
 });
@@ -215,6 +252,9 @@ ws->send("Hello, server!");
 ws->send("Message 1");
 ws->send("Message 2");
 ws->send("Message 3");
+
+// 发送二进制帧，payload 可以包含 NUL 字节。
+ws->send({WebsocketFrameType::binary, std::string("\x00\x01", 2)});
 ```
 
 ### 完整示例：Echo 客户端

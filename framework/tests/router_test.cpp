@@ -839,6 +839,30 @@ TEST(WebsocketRouterTest, HandlerOverwrite)
   ASSERT_EQ(state.path_received, "v2"); // Should use the second handler
 }
 
+TEST(WebsocketRouterTest, DynamicRouteCapturesTrailingPathAndPrefersStaticRoute)
+{
+  khttpd_fw::WebsocketRouter router;
+  auto session = std::make_shared<MockWebsocketSession>();
+  std::shared_ptr<khttpd_fw::WebsocketSession> base = session;
+  std::string selected;
+  std::string target;
+
+  router.add_handler("/gateway/:service", [&](khttpd_fw::WebsocketContext& ctx) {
+    selected = "dynamic";
+    target = ctx.get_path_param("service").value_or("");
+  });
+  router.add_handler("/gateway/health", [&](khttpd_fw::WebsocketContext&) { selected = "static"; });
+
+  khttpd_fw::WebsocketContext nested(base, "/gateway/orders/ws/v1");
+  router.dispatch_open("/gateway/orders/ws/v1", nested);
+  ASSERT_EQ(selected, "dynamic");
+  ASSERT_EQ(target, "orders/ws/v1");
+
+  khttpd_fw::WebsocketContext health(base, "/gateway/health");
+  router.dispatch_open("/gateway/health", health);
+  ASSERT_EQ(selected, "static");
+}
+
 TEST(WebsocketRouterTest, SpecificHandlerRegistered)
 {
   khttpd_fw::WebsocketRouter router;

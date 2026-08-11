@@ -3,6 +3,7 @@
 #include <boost/asio/ssl/host_name_verification.hpp>
 #include <atomic>
 #include <iostream>
+#include <limits>
 #include "io_context_pool.hpp"
 
 namespace khttpd::framework::client
@@ -27,7 +28,7 @@ namespace khttpd::framework::client
   protected:
     HttpClient::ResponseCallback callback_;
     http::request<http::string_body> req_;
-    http::response<http::string_body> res_;
+    std::optional<http::response_parser<http::string_body>> response_parser_;
     beast::flat_buffer buffer_;
     std::chrono::seconds timeout_;
     std::atomic<bool> completed_{false};
@@ -120,7 +121,15 @@ namespace khttpd::framework::client
       boost::ignore_unused(bytes_transferred);
       if (ec) return on_fail(ec, "write");
 
-      http::async_read(stream_, buffer_, res_,
+      read_response();
+    }
+
+    void read_response()
+    {
+      response_parser_.emplace();
+      response_parser_->body_limit((std::numeric_limits<std::uint64_t>::max)());
+      response_parser_->skip(req_.method() == http::verb::head);
+      http::async_read(stream_, buffer_, *response_parser_,
                        beast::bind_front_handler(&HttpSession::on_read, get_shared()));
     }
 
@@ -129,9 +138,13 @@ namespace khttpd::framework::client
       boost::ignore_unused(bytes_transferred);
       if (ec) return on_fail(ec, "read");
 
+      auto response = response_parser_->release();
+      if (response.result_int() >= 100 && response.result_int() < 200 &&
+          response.result() != http::status::switching_protocols)
+        return read_response();
       beast::error_code ignored;
       stream_.socket().shutdown(tcp::socket::shutdown_both, ignored);
-      complete({}, std::move(res_));
+      complete({}, std::move(response));
     }
   };
 
@@ -210,7 +223,15 @@ namespace khttpd::framework::client
     {
       boost::ignore_unused(bytes_transferred);
       if (ec) return on_fail(ec, "write");
-      http::async_read(stream_, buffer_, res_,
+      read_response();
+    }
+
+    void read_response()
+    {
+      response_parser_.emplace();
+      response_parser_->body_limit((std::numeric_limits<std::uint64_t>::max)());
+      response_parser_->skip(req_.method() == http::verb::head);
+      http::async_read(stream_, buffer_, *response_parser_,
                        beast::bind_front_handler(&HttpsSession::on_read, get_shared()));
     }
 
@@ -219,14 +240,20 @@ namespace khttpd::framework::client
       boost::ignore_unused(bytes_transferred);
       if (ec)
       {
-        if ((ec == ssl::error::stream_truncated || ec == net::error::eof) && res_.result_int() != 0)
+        if ((ec == ssl::error::stream_truncated || ec == net::error::eof) &&
+            response_parser_ && response_parser_->is_done())
         {
-          complete({}, std::move(res_));
+          complete({}, response_parser_->release());
           return;
         }
         return on_fail(ec, "read");
       }
 
+      auto response = response_parser_->release();
+      if (response.result_int() >= 100 && response.result_int() < 200 &&
+          response.result() != http::status::switching_protocols)
+        return read_response();
+      final_response_ = std::move(response);
       stream_.async_shutdown(beast::bind_front_handler(&HttpsSession::on_shutdown, get_shared()));
     }
 
@@ -234,8 +261,10 @@ namespace khttpd::framework::client
     {
       if (ec == net::error::eof || ec == ssl::error::stream_truncated)
         ec = {};
-      complete(ec, std::move(res_));
+      complete(ec, std::move(final_response_));
     }
+
+    http::response<http::string_body> final_response_;
   };
 
   // 1. 傻瓜式：全局 IO + 默认 SSL

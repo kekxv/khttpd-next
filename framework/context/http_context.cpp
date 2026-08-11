@@ -55,8 +55,9 @@ namespace khttpd::framework
   }
 
 
-  HttpContext::HttpContext(Request& req, Response& res)
-    : req_(req), res_(res)
+  HttpContext::HttpContext(Request& req, Response& res,
+                           std::optional<boost::asio::ip::tcp::endpoint> peer_endpoint)
+    : req_(req), res_(res), peer_endpoint_(std::move(peer_endpoint))
   {
     res_.version(req_.version());
     res_.keep_alive(req_.keep_alive());
