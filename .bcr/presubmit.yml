@@ -1,8 +1,4 @@
 matrix:
-  platform:
-    - ubuntu2404
-    - macos
-    - windows
   bazel:
     - 7.x
     - 8.x
@@ -10,7 +6,25 @@ matrix:
 tasks:
   verify_targets:
     name: Verify build targets
-    platform: ${{ platform }}
+    platforms:
+      - ubuntu2404
+      - macos
     bazel: ${{ bazel }}
+    build_flags:
+      - '--cxxopt=-std=c++17'
+      - '--@boost.asio//:ssl=boringssl'
+      - '--@boost.mysql//:ssl=boringssl'
+    build_targets:
+      - '@khttpd//...'
+
+  verify_targets_windows:
+    name: Verify Windows build targets
+    platforms:
+      - windows
+    bazel: ${{ bazel }}
+    build_flags:
+      - '--cxxopt=/std:c++17'
+      - '--@boost.asio//:ssl=boringssl'
+      - '--@boost.mysql//:ssl=boringssl'
     build_targets:
       - '@khttpd//...'
