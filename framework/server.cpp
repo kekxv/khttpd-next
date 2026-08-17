@@ -45,23 +45,26 @@ namespace khttpd::framework
       throw std::runtime_error(fmt::format("Failed to listen: {}", ec.message()));
     }
 
-    // Pre-compute canonical web root path once (not per-connection)
-    boost::system::error_code path_ec;
-    canonical_web_root_ = boost::filesystem::canonical(web_root_, path_ec);
-    if (path_ec)
+    if (!web_root_.empty())
     {
-      spdlog::warn("Cannot canonicalize web_root '{}': {}", web_root_, path_ec.message());
-    }
+      // Pre-compute canonical web root path once (not per-connection).
+      boost::system::error_code path_ec;
+      canonical_web_root_ = boost::filesystem::canonical(web_root_, path_ec);
+      if (path_ec)
+      {
+        spdlog::warn("Cannot canonicalize web_root '{}': {}", web_root_, path_ec.message());
+      }
 
-    if (!boost::filesystem::exists(web_root_, ec))
-    {
-      spdlog::warn("Web root directory '{}' does not exist. Static file serving may fail. Error: {}",
-                   web_root_, ec.message());
-    }
-    else if (!boost::filesystem::is_directory(web_root_, ec))
-    {
-      spdlog::warn("Web root path '{}' is not a directory. Static file serving may fail. Error: {}",
-                   web_root_, ec.message());
+      if (!boost::filesystem::exists(web_root_, ec))
+      {
+        spdlog::warn("Web root directory '{}' does not exist. Static file serving may fail. Error: {}",
+                     web_root_, ec.message());
+      }
+      else if (!boost::filesystem::is_directory(web_root_, ec))
+      {
+        spdlog::warn("Web root path '{}' is not a directory. Static file serving may fail. Error: {}",
+                     web_root_, ec.message());
+      }
     }
   }
 
