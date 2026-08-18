@@ -294,6 +294,17 @@ router.post("/tokens", create_token,
 Header metadata documents the API only; it does not authenticate or validate incoming requests. Read and validate the
 header in the handler (for example, with `HttpContext::get_header`) as part of the service's normal authorization flow.
 
+For legacy `HttpContext` handlers, provide explicit JSON Schema values as the fourth and fifth
+`RouteDocumentation` fields. They describe the request body and successful response without changing runtime parsing:
+
+```cpp
+router.post("/authorize", authorize,
+            {"Authorize", "Checks an API token.", {},
+             {{"type", "object"}, {"properties", {{"token", {{"type", "string"}}}}},
+              {"required", {"token"}}},
+             {{"type", "object"}, {"properties", {{"authorized", {{"type", "boolean"}}}}}}});
+```
+
 For an already registered async or stream route, call
 `router.document_route("/messages", boost::beast::http::verb::post, {"Send a message", "..."})` afterwards. Controllers
 can use `KHTTPD_DOCUMENTED_ROUTE` or `KHTTPD_DOCUMENTED_TYPED_ROUTE` with the same `RouteDocumentation` value.

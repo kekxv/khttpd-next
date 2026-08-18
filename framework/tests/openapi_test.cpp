@@ -161,6 +161,33 @@ TEST(OpenApiTest, IncludesTypedDescribeSchemas)
   EXPECT_EQ(tags.at("items").as_object().at("type"), "string");
 }
 
+TEST(OpenApiTest, IncludesExplicitSchemasForDocumentedLegacyRoutes)
+{
+  fw::HttpRouter router;
+  router.post("/authorize", [](fw::HttpContext&) {},
+              {"Authorize", "Checks an API token.", {},
+               boost::json::object{{"type", "object"},
+                                   {"properties", boost::json::object{
+                                     {"token", boost::json::object{{"type", "string"}}},
+                                     {"permissions", boost::json::object{{"type", "array"},
+                                       {"items", boost::json::object{{"type", "string"}}}}}}},
+                                   {"required", boost::json::array{"token", "permissions"}}},
+               boost::json::object{{"type", "object"},
+                                   {"properties", boost::json::object{
+                                     {"active", boost::json::object{{"type", "boolean"}}},
+                                     {"authorized", boost::json::object{{"type", "boolean"}}}}}}});
+
+  const auto document = fw::generate_openapi(router);
+  const auto& operation = operation_at(document, "/authorize", "post");
+  const auto& request = operation.at("requestBody").as_object().at("content").as_object()
+    .at("application/json").as_object().at("schema").as_object();
+  EXPECT_EQ(request.at("properties").as_object().at("token").as_object().at("type"), "string");
+  EXPECT_EQ(request.at("required").as_array()[1], "permissions");
+  const auto& response = operation.at("responses").as_object().at("200").as_object()
+    .at("content").as_object().at("application/json").as_object().at("schema").as_object();
+  EXPECT_EQ(response.at("properties").as_object().at("authorized").as_object().at("type"), "boolean");
+}
+
 TEST(OpenApiTest, EmitsPropertiesForUnreflectedObjectSchemas)
 {
   fw::HttpRouter router;

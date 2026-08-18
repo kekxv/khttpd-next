@@ -44,6 +44,8 @@ namespace khttpd::framework
     std::string summary;
     std::string description;
     std::vector<RouteHeader> headers;
+    std::optional<boost::json::value> request_schema;
+    std::optional<boost::json::value> response_schema;
   };
 
   struct RouteDescriptor
