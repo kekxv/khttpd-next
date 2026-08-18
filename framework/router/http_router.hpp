@@ -32,10 +32,18 @@ namespace khttpd::framework
                                                std::shared_ptr<HttpResponseStream>, HttpStreamComplete)>;
   using UnknownExceptionHandler = std::function<void(HttpContext&)>;
 
+  struct RouteHeader
+  {
+    std::string name;
+    std::string description;
+    bool required = false;
+  };
+
   struct RouteDocumentation
   {
     std::string summary;
     std::string description;
+    std::vector<RouteHeader> headers;
   };
 
   struct RouteDescriptor

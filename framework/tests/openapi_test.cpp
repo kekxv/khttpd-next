@@ -235,6 +235,36 @@ TEST(OpenApiTest, IncludesRouteSummaryAndDescription)
   EXPECT_NE(response.body().find("Accepts a message and returns its delivery result."), std::string::npos);
 }
 
+TEST(OpenApiTest, IncludesDocumentedRequestHeaders)
+{
+  fw::HttpRouter router;
+  router.post("/secure", [](fw::HttpContext&) {},
+              {"Secure operation", "Requires an API access token.",
+               {{"Authorization", "Bearer access token.", true},
+                {"X-Request-Id", "Optional caller correlation identifier.", false}}});
+
+  const auto document = fw::generate_openapi(router);
+  const auto& operation = operation_at(document, "/secure", "post");
+  const auto& parameters = operation.at("parameters").as_array();
+  ASSERT_EQ(parameters.size(), 2U);
+  EXPECT_EQ(parameters[0].as_object().at("name"), "Authorization");
+  EXPECT_EQ(parameters[0].as_object().at("in"), "header");
+  EXPECT_EQ(parameters[0].as_object().at("description"), "Bearer access token.");
+  EXPECT_EQ(parameters[0].as_object().at("required"), true);
+  EXPECT_EQ(parameters[0].as_object().at("schema").as_object().at("type"), "string");
+  EXPECT_EQ(parameters[1].as_object().at("name"), "X-Request-Id");
+  EXPECT_EQ(parameters[1].as_object().at("required"), false);
+
+  fw::install_openapi_routes(router);
+  http::request<http::string_body> request{http::verb::get, "/docs", 11};
+  http::response<http::string_body> response;
+  fw::HttpContext context(request, response);
+  router.dispatch(context);
+  EXPECT_NE(response.body().find("Authorization"), std::string::npos);
+  EXPECT_NE(response.body().find("Bearer access token."), std::string::npos);
+  EXPECT_NE(response.body().find("data-header-name"), std::string::npos);
+}
+
 TEST(OpenApiTest, DocumentsRouteAtRegistration)
 {
   fw::HttpRouter router;
