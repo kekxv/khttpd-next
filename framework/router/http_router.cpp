@@ -185,7 +185,8 @@ namespace khttpd::framework
       {
         descriptor.request_schema = std::move(request_schema);
         descriptor.response_schema = std::move(response_schema);
-        if (!documentation.summary.empty() || !documentation.description.empty())
+        if (!documentation.summary.empty() || !documentation.description.empty() ||
+            !documentation.headers.empty())
           descriptor.documentation = std::move(documentation);
         return;
       }

@@ -281,6 +281,19 @@ router.post("/messages", handle_message,
             {"Send a message", "Accepts a message and returns its delivery result."});
 ```
 
+Document request headers with a name, description, and required flag. They are emitted as OpenAPI `in: header`
+parameters and appear in the interactive `/docs` request form:
+
+```cpp
+router.post("/tokens", create_token,
+            {"Create token", "Creates an access token.",
+             {{"Authorization", "Bearer access token.", true},
+              {"X-Request-Id", "Optional caller correlation identifier.", false}}});
+```
+
+Header metadata documents the API only; it does not authenticate or validate incoming requests. Read and validate the
+header in the handler (for example, with `HttpContext::get_header`) as part of the service's normal authorization flow.
+
 For an already registered async or stream route, call
 `router.document_route("/messages", boost::beast::http::verb::post, {"Send a message", "..."})` afterwards. Controllers
 can use `KHTTPD_DOCUMENTED_ROUTE` or `KHTTPD_DOCUMENTED_TYPED_ROUTE` with the same `RouteDocumentation` value.

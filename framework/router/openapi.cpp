@@ -60,21 +60,30 @@ namespace khttpd::framework
         operation.emplace("summary", descriptor.documentation.summary);
       if (!descriptor.documentation.description.empty())
         operation.emplace("description", descriptor.documentation.description);
-      if (!path_parameters.empty())
+      boost::json::array parameters;
+      for (std::size_t index = 0; index < path_parameters.size(); ++index)
       {
-        boost::json::array parameters;
-        for (std::size_t index = 0; index < path_parameters.size(); ++index)
-        {
-          boost::json::object parameter;
-          parameter.emplace("name", path_parameters[index]);
-          parameter.emplace("in", "path");
-          parameter.emplace("required", true);
-          parameter.emplace("schema", boost::json::object{{"type", "string"}});
-          if (index + 1 == path_parameters.size()) parameter.emplace("x-khttpd-greedy", true);
-          parameters.emplace_back(std::move(parameter));
-        }
-        operation.emplace("parameters", std::move(parameters));
+        boost::json::object parameter;
+        parameter.emplace("name", path_parameters[index]);
+        parameter.emplace("in", "path");
+        parameter.emplace("required", true);
+        parameter.emplace("schema", boost::json::object{{"type", "string"}});
+        if (index + 1 == path_parameters.size()) parameter.emplace("x-khttpd-greedy", true);
+        parameters.emplace_back(std::move(parameter));
       }
+      for (const auto& header : descriptor.documentation.headers)
+      {
+        if (header.name.empty()) continue;
+        boost::json::object parameter;
+        parameter.emplace("name", header.name);
+        parameter.emplace("in", "header");
+        if (!header.description.empty()) parameter.emplace("description", header.description);
+        parameter.emplace("required", header.required);
+        parameter.emplace("schema", boost::json::object{{"type", "string"}});
+        parameters.emplace_back(std::move(parameter));
+      }
+      if (!parameters.empty())
+        operation.emplace("parameters", std::move(parameters));
 
       if (descriptor.request_schema)
       {
@@ -325,13 +334,14 @@ namespace khttpd::framework
         return result + "<p class=\"empty\">No parameters.</p></section>";
 
       result += "<div class=\"table-wrap\"><table><thead><tr><th>Name</th><th>Location</th>"
-        "<th>Required</th><th>Schema</th></tr></thead><tbody>";
+        "<th>Description</th><th>Required</th><th>Schema</th></tr></thead><tbody>";
       for (const auto& parameter_value : parameters->as_array())
       {
         if (!parameter_value.is_object()) continue;
         const auto& parameter = parameter_value.as_object();
         const auto* name = parameter.if_contains("name");
         const auto* location = parameter.if_contains("in");
+        const auto* description = parameter.if_contains("description");
         const auto* required = parameter.if_contains("required");
         const auto* schema = parameter.if_contains("schema");
         result += "<tr><td><code>" +
@@ -339,6 +349,8 @@ namespace khttpd::framework
           "</code></td><td>" +
           escape_html(location != nullptr && location->is_string() ?
             std::string(location->as_string()) : "") + "</td><td>" +
+          escape_html(description != nullptr && description->is_string() ?
+            std::string(description->as_string()) : "") + "</td><td>" +
           (required != nullptr && required->is_bool() && required->as_bool() ? "Yes" : "No") +
           "</td><td>" +
           (schema != nullptr ? "<code>" + escape_html(boost::json::serialize(*schema)) + "</code>" : "—") +
@@ -460,13 +472,26 @@ namespace khttpd::framework
           const auto& parameter = parameter_value.as_object();
           const auto* location = parameter.if_contains("in");
           const auto* name = parameter.if_contains("name");
-          if (location == nullptr || !location->is_string() || location->as_string() != "path" ||
-              name == nullptr || !name->is_string()) continue;
+          if (location == nullptr || !location->is_string() || name == nullptr || !name->is_string())
+            continue;
           const std::string parameter_name(name->as_string());
-          result += "<label class=\"try-field\"><span>" + escape_html(parameter_name) +
-            " <small>path</small></span><input type=\"text\" data-path-param=\"" +
-            escape_html(parameter_name) + "\" placeholder=\"Enter " + escape_html(parameter_name) +
-            "\" autocomplete=\"off\"></label>";
+          const auto* required = parameter.if_contains("required");
+          const bool is_required = required != nullptr && required->is_bool() && required->as_bool();
+          if (location->as_string() == "path")
+          {
+            result += "<label class=\"try-field\"><span>" + escape_html(parameter_name) +
+              " <small>path</small></span><input type=\"text\" data-path-param=\"" +
+              escape_html(parameter_name) + "\" placeholder=\"Enter " + escape_html(parameter_name) +
+              "\" autocomplete=\"off\"></label>";
+          }
+          else if (location->as_string() == "header")
+          {
+            result += "<label class=\"try-field\"><span>" + escape_html(parameter_name) +
+              " <small>header</small></span><input type=\"text\" data-header-name=\"" +
+              escape_html(parameter_name) + "\" data-header-required=\"" +
+              (is_required ? "true" : "false") + "\" placeholder=\"Enter " +
+              escape_html(parameter_name) + "\" autocomplete=\"off\"></label>";
+          }
         }
       }
 
@@ -502,17 +527,32 @@ namespace khttpd::framework
     });
     if (missingParameter) throw new Error("Enter path parameter: " + missingParameter);
 
+    const headers = {Accept: "application/json"};
+    let missingHeader = "";
+    panel.querySelectorAll("[data-header-name]").forEach(input => {
+      const value = input.value.trim();
+      if (value) {
+        headers[input.dataset.headerName] = value;
+      } else if (requireParameters && input.dataset.headerRequired === "true") {
+        missingHeader = input.dataset.headerName;
+      }
+    });
+    if (missingHeader) throw new Error("Enter request header: " + missingHeader);
+
     const method = panel.dataset.method;
     const url = window.location.origin + (path.startsWith("/") ? path : "/" + path);
     const bodyInput = panel.querySelector("[data-request-body]");
     const body = bodyInput ? bodyInput.value.trim() : "";
     let command = "curl -i -X " + method + " " + shellQuote(url);
+    Object.entries(headers).forEach(([name, value]) => {
+      if (name !== "Accept") command += " \\\n  -H " + shellQuote(name + ": " + value);
+    });
     if (body && method !== "GET" && method !== "HEAD") {
       command += " \\\n  -H " + shellQuote("Content-Type: application/json") +
         " \\\n  --data-binary " + shellQuote(body);
     }
     panel.querySelector("[data-curl-output]").textContent = command;
-    return {method, url, body, command};
+    return {method, url, body, headers, command};
   }
 
   function feedback(panel, message, error = false) {
@@ -570,7 +610,7 @@ namespace khttpd::framework
         credentials: "omit",
         cache: "no-store",
         redirect: "manual",
-        headers: {Accept: "application/json"}
+        headers: request.headers
       };
       if (request.body && request.method !== "GET" && request.method !== "HEAD") {
         options.headers["Content-Type"] = "application/json";
