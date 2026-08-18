@@ -162,6 +162,50 @@ void(HttpContext&,
 
 普通 handler 仍使用 `string_body`，超过 Server 配置上限会返回 413。流式路由使用固定缓冲区读取，不受该缓冲上限约束。
 
+### 强类型 JSON 路由
+
+`get/post/put/del/options` 还接受返回值非 `void` 的强类型 callable：
+
+```cpp
+router.post("/users", [](const CreateUserRequest& request) -> HttpResult<UserResponse> {
+    return HttpResult<UserResponse>::created({1001, request.name})
+        .header("Location", "/users/1001");
+});
+```
+
+支持的 Controller 成员签名（也支持 `const` 成员函数）：
+
+```cpp
+Response method(const Request&);
+Response method(const Request&, HttpContext&);
+```
+
+`Response` 可以是 JSON 可序列化裸类型、`HttpResult<T>` 或 `HttpResult<void>`。裸类型自动返回 HTTP 200。
+第二个 `HttpContext&` 参数用于读取 path/query/header/cookie 和拦截器属性。请求体必须是 `application/json`
+或 `application/*+json`；媒体类型或 JSON/DTO 转换失败时返回 HTTP 400，并且不会调用业务 handler。
+
+Controller 可使用：
+
+```cpp
+KHTTPD_TYPED_ROUTE(post, "/users", create_user);
+```
+
+原有 `KHTTPD_ROUTE`、`void(HttpContext&)` 和所有路由分发行为保持不变。强类型路由仍执行相同的前置/后置拦截器，
+不能替代鉴权拦截器。
+
+### HttpResult
+
+| API | 说明 |
+|------|------|
+| `HttpResult<T>(status, body)` | 指定状态和 JSON 响应体 |
+| `HttpResult<T>::ok(body)` | 创建 HTTP 200 响应 |
+| `HttpResult<T>::created(body)` | 创建 HTTP 201 响应 |
+| `HttpResult<void>::no_content()` | 创建无响应体的 HTTP 204 响应 |
+| `result.header(name, value)` | 增加经过校验的响应头 |
+
+响应头拒绝 CR/LF/NUL、其他控制字符、非法字段名，以及 `Content-Length`、`Transfer-Encoding`、`Connection`
+等由服务器管理的 framing/hop-by-hop 字段，避免响应拆分和消息边界冲突。
+
 ### 路由语法
 
 | 语法 | 示例 | 匹配 |
@@ -184,6 +228,7 @@ void(HttpContext&,
 |------|------|
 | `add_interceptor(interceptor)` | 添加拦截器 |
 | `add_exception_handler(handler)` | 添加异常处理器 |
+| `map_exception<E>(mapper)` | 将异常 `E` 映射为裸 JSON 响应或 `HttpResult<T>` |
 | `set_unknown_exception_handler(handler)` | 设置未知异常兜底处理器 |
 | `run_pre_interceptors(ctx)` | 执行前置拦截器 |
 | `run_post_interceptors(ctx)` | 执行后置拦截器（逆序） |
@@ -323,6 +368,95 @@ class ExceptionHandler : public ExceptionHandlerBase
 ```
 
 针对单一异常类型的处理器（需继承实现）。
+
+### 强类型异常映射
+
+```cpp
+router.map_exception<ValidationError>([](const ValidationError& error) {
+    return HttpResult<ErrorResponse>(
+        http::status::unprocessable_entity,
+        {"VALIDATION_FAILED", error.what()});
+});
+```
+
+也可以抛出 `HttpException(status, json_body, internal_message)`，并通过 `.header(name, value)` 添加经过相同安全校验的响应头。
+`internal_message` 只写服务端日志，不进入 JSON 响应。未匹配的 `std::exception` 默认返回：
+
+```json
+{"code":"INTERNAL_SERVER_ERROR","message":"Internal server error"}
+```
+
+异常响应会先清除 handler 已经写入的部分响应，避免错误路径泄露残留的 header 或 body。旧的
+`ExceptionDispatcher`、`ExceptionHandler<E>` 和自定义 unknown handler 保持兼容。
+
+---
+
+## OpenAPI 3.1 文档
+
+头文件：
+
+```cpp
+#include "framework/router/openapi.hpp"
+```
+
+### 数据类型
+
+```cpp
+struct OpenApiInfo {
+    std::string title = "khttpd API";
+    std::string version = "1.0.0";
+};
+
+struct RouteDescriptor {
+    std::string path;
+    boost::beast::http::verb method;
+    std::optional<boost::json::value> request_schema;
+    std::optional<boost::json::value> response_schema;
+};
+```
+
+`HttpRouter::route_descriptors()` 返回不含 handler、正则表达式、拦截器和异常映射器的副本，调用方无法借此修改路由器内部状态。
+
+### 生成和导出
+
+```cpp
+boost::json::object generate_openapi(
+    const HttpRouter& router,
+    const OpenApiInfo& info = {});
+
+void export_openapi(
+    const HttpRouter& router,
+    const std::string& output_path,
+    const OpenApiInfo& info = {});
+```
+
+输出固定为 OpenAPI 3.1.0。路径中的 `:id` 转换为 `{id}`；由于当前路由匹配规则允许最后一个动态参数跨 `/`，该参数带有 `x-khttpd-greedy: true`。旧式、异步和流式路由生成 method/path/parameter/response 骨架；强类型路由还生成 JSON request body 和 response schema。
+
+Boost.Describe DTO 可自动展开字段：
+
+```cpp
+struct CreateRequest { std::string name; int age; };
+BOOST_DESCRIBE_STRUCT(CreateRequest, (), (name, age))
+```
+
+仅通过自定义 `tag_invoke` 序列化且没有 Boost.Describe 元数据的类型会退化为 `{ "type": "object" }`，不会猜测字段。`std::optional<T>` 字段不进入 `required`；字符串、布尔、整数、浮点和 `std::vector<T>` 会生成对应 schema。
+
+文件输出采用确定性路径/方法顺序并以换行结尾。空路径、无法打开或无法完整写入会抛出异常。API 不替调用方限制目标目录，因此不要把未经授权的网络输入直接作为 `output_path`。
+
+### 运行时文档路由
+
+```cpp
+void install_openapi_routes(
+    HttpRouter& router,
+    const OpenApiInfo& info = {},
+    const std::string& spec_path = "/openapi.json",
+    const std::string& docs_path = "/docs",
+    bool enabled = true);
+```
+
+先注册业务路由，再调用该函数。它会安装只读 JSON 与 HTML 入口，并从生成文档中隐藏自身。两个路径必须是互不相同的绝对字面路径，且不能与已有 GET 路由冲突；冲突会抛出 `std::invalid_argument`，不会覆盖业务 handler。路由仍走标准 session、前置/后置 interceptor 和授权流程，不存在单独的越权 dispatch 通道。
+
+传入 `enabled = false` 时函数不注册 `/openapi.json` 或 `/docs`，可用于按环境、租户或权限策略手动关闭运行时文档；离线 `export_openapi` 不受此开关影响。
 
 ---
 

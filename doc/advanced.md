@@ -78,14 +78,37 @@ auto uid = ctx.get_attribute_as<std::string>("user_id");
 
 ## 异常处理
 
-### ExceptionDispatcher（推荐）
+### 强类型异常映射（推荐）
+
+```cpp
+router.map_exception<ValidationError>([](const ValidationError& error) {
+    boost::json::object body;
+    body.emplace("code", "VALIDATION_FAILED");
+    body.emplace("message", error.what());
+    return HttpResult<boost::json::object>(http::status::unprocessable_entity, std::move(body));
+});
+```
+
+异常也可以直接携带公开 JSON 和只供日志使用的内部信息：
+
+```cpp
+throw HttpException(
+    http::status::conflict,
+    boost::json::object{{"code", "VERSION_CONFLICT"}},
+    "optimistic lock failed for internal row 99");
+```
+
+未注册异常默认返回固定 JSON 500，不会把 `what()`、数据库信息或内部地址暴露给客户端。仅在映射明确认为
+异常文本可以公开时，才应把 `error.what()` 放进响应 DTO。
+
+### ExceptionDispatcher（兼容接口）
 
 ```cpp
 auto dispatcher = std::make_shared<khttpd::framework::ExceptionDispatcher>();
 
 dispatcher->on<std::runtime_error>([](const std::runtime_error& e, HttpContext& ctx) {
     ctx.set_status(boost::beast::http::status::internal_server_error);
-    ctx.set_body(fmt::format("Server Error: {}", e.what()));
+    ctx.set_body("Internal server error"); // 不要向客户端返回 e.what()
 });
 
 dispatcher->on<int>([](const int code, HttpContext& ctx) {
@@ -114,7 +137,7 @@ public:
 class MyExceptionHandler : public khttpd::framework::ExceptionHandler<MyException> {
     void handle(const MyException& e, HttpContext& ctx) override {
         ctx.set_status(boost::beast::http::status::unprocessable_entity);
-        ctx.set_body(e.what());
+        ctx.set_body(e.what()); // 仅当 what() 明确只包含可公开的校验信息
     }
 };
 
@@ -285,6 +308,36 @@ router.stream("/gateway/:target", http::verb::post,
 若上游已提前拒绝请求，可调用 `request->cancel_read()` 或 `response->cancel_request_body()`。这只终止入站请求体读取，响应仍可正常写回；为避免未消费字节污染下一条请求，该连接不会再 keep-alive。
 
 `HttpClientStream` 和 `HttpProxySession` 同时支持 `http://` 与 `https://`，两种传输都保持固定缓冲模型。默认 TLS context 使用系统信任库并校验证书；私有 CA 可通过接受 `ssl::context&` 的构造函数注入。
+
+---
+
+## OpenAPI 服务与离线导出
+
+建议把业务路由注册提取为一个同时用于服务模式和导出模式的函数：
+
+```cpp
+void register_routes(HttpRouter& http, WebsocketRouter& websocket);
+
+if (export_path) {
+    HttpRouter http;
+    WebsocketRouter websocket;
+    register_routes(http, websocket);
+    export_openapi(http, *export_path, {"Service API", "1.0.0"});
+    return 0; // 没有构造 Server，因此不会 bind/listen
+}
+
+auto server = std::make_shared<Server>(endpoint, web_root, threads);
+register_routes(server->get_http_router(), server->get_websocket_router());
+install_openapi_routes(server->get_http_router(), {"Service API", "1.0.0"},
+                       "/openapi.json", "/docs", enable_runtime_docs);
+server->run();
+```
+
+运行时文档是普通 GET 路由，会经过与业务接口相同的 interceptor。若文档不应公开，应在现有鉴权 interceptor 中按路径或权限策略控制；不要另建绕过 session 的响应通道。安装函数拒绝控制字符、动态文档路径、两个入口重名以及已有 GET 路由冲突，避免 header/HTML 注入和静默路由覆盖。
+
+最后一个 `enabled` 参数可手动开关运行时入口：为 `false` 时不注册 `/openapi.json` 与 `/docs`；离线导出仍可单独执行。example 同时提供 `--enable-openapi-docs` 和 `--disable-openapi-docs`。
+
+离线导出具有调用进程对目标路径的全部文件权限，并会截断已存在文件。CLI 或管理接口必须先完成目录白名单、租户边界和操作权限校验；框架只保证确定性 JSON 以及打开/写入失败可见，不负责替业务决定允许写入哪些目录。
 
 ---
 

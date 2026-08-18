@@ -379,16 +379,26 @@ void HttpSession::handle_request()
   catch (...)
   {
     router_.handle_exception(std::current_exception(), *ctx);
-    send_response(std::move(res_));
+    try
+    {
+      router_.run_post_interceptors(*ctx);
+    }
+    catch (...)
+    {
+      router_.handle_exception(std::current_exception(), *ctx);
+    }
+    send_context_response();
   }
 }
 
 void HttpSession::dispatch_request_after_interceptors(InterceptorResult result)
 {
+  bool post_interceptors_started = false;
   try
   {
     if (result == InterceptorResult::Stop)
     {
+      post_interceptors_started = true;
       router_.run_post_interceptors(*ctx);
       return send_context_response();
     }
@@ -409,12 +419,25 @@ void HttpSession::dispatch_request_after_interceptors(InterceptorResult result)
       return static_file_served;
     });
     if (static_file_served) return;
+    post_interceptors_started = true;
     router_.run_post_interceptors(*ctx);
     send_context_response();
   }
   catch (...)
   {
     router_.handle_exception(std::current_exception(), *ctx);
+    if (!post_interceptors_started)
+    {
+      try
+      {
+        post_interceptors_started = true;
+        router_.run_post_interceptors(*ctx);
+      }
+      catch (...)
+      {
+        router_.handle_exception(std::current_exception(), *ctx);
+      }
+    }
     send_context_response();
   }
 }

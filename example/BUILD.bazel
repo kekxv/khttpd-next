@@ -1,4 +1,5 @@
 load("@rules_cc//cc:defs.bzl", "cc_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 cc_binary(
     name = "app",
@@ -6,10 +7,24 @@ cc_binary(
         "HelloController.hpp",
         "HelloStreamController.hpp",
         "HelloWsController.hpp",
+        "TypedHelloController.hpp",
         "main.cpp",
     ],
     deps = [
         "@khttpd",
         "@spdlog",
     ],
+)
+
+sh_test(
+    name = "export_openapi_test",
+    srcs = ["export_openapi_test.sh"],
+    data = [":app"],
+)
+
+sh_test(
+    name = "runtime_docs_toggle_test",
+    srcs = ["runtime_docs_toggle_test.sh"],
+    data = [":app"],
+    tags = ["exclusive"],
 )

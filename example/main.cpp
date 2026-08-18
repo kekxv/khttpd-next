@@ -4,46 +4,39 @@
 #include "framework/server.hpp"
 #include "framework/context/http_context.hpp"
 #include "framework/context/websocket_context.hpp"
+#include "framework/router/openapi.hpp"
 #include <boost/asio/ip/tcp.hpp>
 #include <thread>
 #include <memory>
+#include <optional>
+#include <string_view>
 #include <fmt/format.h>
 #include <spdlog/spdlog.h>
 
 #include "HelloController.hpp"
 #include "HelloStreamController.hpp"
 #include "HelloWsController.hpp"
+#include "TypedHelloController.hpp"
 
 namespace net = boost::asio;
 using tcp = boost::asio::ip::tcp;
 namespace beast = boost::beast;
 
-int main(int argc, char* argv[])
+namespace
 {
-  auto const address = net::ip::make_address("0.0.0.0");
-  auto const port = static_cast<unsigned short>(8080);
-  auto const num_threads = std::max<int>(1, static_cast<int>(std::thread::hardware_concurrency()));
-
-  spdlog::info("Starting khttpd server with {} worker threads...", num_threads);
-
-  // 定义 Web 根目录
-  std::string web_root_path = "web_root";
-  // 创建一个简单的 web_root 目录和文件用于测试
-  boost::filesystem::create_directories(web_root_path);
-  std::ofstream("web_root/index.html") <<
-    "<html><body><h1>Hello from Static Index!</h1><p>Visit <a href=\"/hello_static.html\">hello_static.html</a></p></body></html>";
-  std::ofstream("web_root/hello_static.html") <<
-    R"(<html><body><h2>This is a static HTML file.</h2><img src="/image.png" alt="Static Image"/></body></html>)";
-
-  auto server = std::make_shared<khttpd::framework::Server>(
-    tcp::endpoint{address, port}, web_root_path, num_threads);
-
-  auto& http_router = server->get_http_router();
-  auto& ws_router = server->get_websocket_router();
-
+  void register_application_routes(khttpd::framework::HttpRouter& http_router,
+                                   khttpd::framework::WebsocketRouter& ws_router)
+  {
+  http_router.map_exception<GreetingValidationError>([](const GreetingValidationError&)
+  {
+    return khttpd::framework::HttpResult<GreetingErrorResponse>(
+      beast::http::status::bad_request,
+      {"INVALID_GREETING", "The greeting name must not be empty"});
+  });
   HelloController::create()->register_routes(http_router)->register_routes(ws_router);
   HelloStreamController::create()->register_routes(http_router)->register_routes(ws_router);
   HelloWsController::create()->register_routes(http_router)->register_routes(ws_router);
+  TypedHelloController::create()->register_routes(http_router)->register_routes(ws_router);
 
   http_router.get("/", [](khttpd::framework::HttpContext& ctx)
   {
@@ -272,9 +265,88 @@ int main(int argc, char* argv[])
     }
   );
 
-  server->run();
+  }
 
-  spdlog::info("Application exited.");
+  std::optional<std::string> export_path_from_arguments(const int argc, char* argv[])
+  {
+    constexpr std::string_view prefix = "--export-openapi=";
+    for (int index = 1; index < argc; ++index)
+    {
+      const std::string_view argument(argv[index]);
+      if (argument == "--export-openapi")
+      {
+        if (index + 1 >= argc) throw std::invalid_argument("--export-openapi requires an output path");
+        return std::string(argv[index + 1]);
+      }
+      if (argument.compare(0, prefix.size(), prefix) == 0)
+      {
+        const auto path = argument.substr(prefix.size());
+        if (path.empty()) throw std::invalid_argument("--export-openapi requires an output path");
+        return std::string(path);
+      }
+    }
+    return std::nullopt;
+  }
 
-  return 0;
+  bool openapi_docs_enabled_from_arguments(const int argc, char* argv[])
+  {
+    bool enabled = true;
+    for (int index = 1; index < argc; ++index)
+    {
+      const std::string_view argument(argv[index]);
+      if (argument == "--enable-openapi-docs") enabled = true;
+      if (argument == "--disable-openapi-docs") enabled = false;
+    }
+    return enabled;
+  }
+}
+
+int main(int argc, char* argv[])
+{
+  try
+  {
+    const auto export_path = export_path_from_arguments(argc, argv);
+    if (export_path)
+    {
+      khttpd::framework::HttpRouter http_router;
+      khttpd::framework::WebsocketRouter ws_router;
+      register_application_routes(http_router, ws_router);
+      khttpd::framework::export_openapi(http_router, *export_path,
+                                       {"khttpd example API", "1.0.0"});
+      spdlog::info("OpenAPI document exported to {}", *export_path);
+      return 0;
+    }
+
+    auto const address = net::ip::make_address("0.0.0.0");
+    auto const port = static_cast<unsigned short>(8080);
+    auto const num_threads = std::max<int>(1, static_cast<int>(std::thread::hardware_concurrency()));
+    spdlog::info("Starting khttpd server with {} worker threads...", num_threads);
+
+    std::string web_root_path = "web_root";
+    boost::filesystem::create_directories(web_root_path);
+    std::ofstream("web_root/index.html") <<
+      "<html><body><h1>Hello from Static Index!</h1><p>Visit <a href=\"/hello_static.html\">hello_static.html</a></p></body></html>";
+    std::ofstream("web_root/hello_static.html") <<
+      R"(<html><body><h2>This is a static HTML file.</h2><img src="/image.png" alt="Static Image"/></body></html>)";
+
+    auto server = std::make_shared<khttpd::framework::Server>(
+      tcp::endpoint{address, port}, web_root_path, num_threads);
+    auto& http_router = server->get_http_router();
+    auto& ws_router = server->get_websocket_router();
+    register_application_routes(http_router, ws_router);
+    khttpd::framework::install_openapi_routes(
+      http_router, {"khttpd example API", "1.0.0"}, "/openapi.json", "/docs",
+      openapi_docs_enabled_from_arguments(argc, argv));
+
+    server->run();
+
+    spdlog::info("Application exited.");
+    return 0;
+  }
+  catch (const std::exception& error)
+  {
+    spdlog::error("Application failed: {}", error.what());
+    return 1;
+  }
+
 }

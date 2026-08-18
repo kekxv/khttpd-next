@@ -14,6 +14,8 @@ and [Boost.Asio](https://www.boost.org/doc/libs/release/libs/asio/), managed wit
   specificity sorting
 - **Controller Pattern** — CRTP-based `BaseController` with `KHTTPD_ROUTE` / `KHTTPD_WSROUTE` macros for clean route
   definitions
+- **Typed JSON Routes** — Request/response inference for lambdas and controller members, `HttpResult<T>` status/headers,
+  and serializable exception mapping while retaining the original `HttpContext&` API
 - **HTTP Client** — Sync & async HTTP client with SSL, bearer token, base URL, and JSON body serialization
 - **Oat++-style API Client** — Declarative API definition with `KHTTPD_API_CLIENT`, multi-host support with weight-based routing
 - **WebSocket Client** — Async WebSocket client counterpart
@@ -230,6 +232,71 @@ class MyController : public khttpd::framework::BaseController<MyController> {
 MyController::create()->register_routes(server->get_http_router());
 ```
 
+### Typed JSON routes
+
+Typed routes infer the request and response from a callable or controller member. DTOs described with Boost.Describe work
+with the framework's Boost.JSON conversion support:
+
+```cpp
+struct CreateUserRequest { std::string name; int age; };
+struct UserResponse { int id; std::string name; };
+
+BOOST_DESCRIBE_STRUCT(CreateUserRequest, (), (name, age))
+BOOST_DESCRIBE_STRUCT(UserResponse, (), (id, name))
+
+class UserController final : public khttpd::framework::BaseController<UserController> {
+public:
+    std::shared_ptr<BaseController> register_routes(HttpRouter& router) override {
+        KHTTPD_TYPED_ROUTE(post, "/users", create_user);
+        return shared_from_this();
+    }
+
+private:
+    khttpd::framework::HttpResult<UserResponse> create_user(const CreateUserRequest& request) {
+        auto result = khttpd::framework::HttpResult<UserResponse>::created({1001, request.name});
+        return result.header("Location", "/users/1001");
+    }
+};
+```
+
+A bare JSON-serializable response is automatically returned as JSON with status 200. Return `HttpResult<T>` when status or
+headers are required, and `HttpResult<void>` for an empty response. The optional second handler argument may be
+`HttpContext&` for headers, cookies, path parameters, and interceptor attributes.
+
+Typed request bodies require `application/json` or an `application/*+json` media type. Invalid bodies receive a stable 400
+response without invoking the handler. Typed routes register as ordinary buffered routes, so interceptors and authorization
+checks run before them exactly as they do for legacy routes.
+
+### OpenAPI 3.1 documentation
+
+Route registration also records handler-free documentation metadata. Legacy routes contribute their method, path, and path
+parameters; typed routes additionally contribute request and response schemas. DTOs declared with `BOOST_DESCRIBE_STRUCT`
+produce field-level schemas, while DTOs that only provide custom Boost.JSON converters use a conservative `object` schema.
+
+```cpp
+#include "framework/router/openapi.hpp"
+
+// Register application routes first, then add hidden runtime documentation routes.
+khttpd::framework::install_openapi_routes(
+    server->get_http_router(), {"Example API", "1.0.0"});
+// GET /openapi.json and GET /docs
+```
+
+The example includes `POST /typed/greetings`, `HttpResult<T>` headers/status, and a serialized validation exception. Run it
+normally on port 8080, or export the exact same registered routes and exit without constructing a listening server:
+
+```bash
+bazel run //example:app
+bazel run //example:app -- --export-openapi openapi.json
+bazel run //example:app -- --disable-openapi-docs
+```
+
+`install_openapi_routes` rejects dynamic, control-character, duplicate, or conflicting documentation paths. Documentation
+routes are omitted from their own document and use the ordinary router/interceptor pipeline. `export_openapi` writes only to
+the caller-supplied path; applications should apply their normal filesystem authorization policy before accepting such a path
+from an untrusted user. Runtime routes can be switched explicitly with the final `enabled` argument; the example accepts
+`--enable-openapi-docs` and `--disable-openapi-docs` (the last flag wins).
+
 ### Streaming HTTP routes and proxying
 
 Large request and response bodies can bypass `string_body` buffering by using a
@@ -361,15 +428,17 @@ auto repo = di.resolve<UserRepository>();
 ### Exception Handling
 
 ```cpp
-#include "framework/exception/exception_handler.hpp"
+#include "framework/exception/http_exception.hpp"
 
-auto dispatcher = std::make_shared<khttpd::framework::ExceptionDispatcher>();
-dispatcher->on<std::runtime_error>([](const std::runtime_error& e, HttpContext& ctx) {
-    ctx.set_status(boost::beast::http::status::internal_server_error);
-    ctx.set_body(fmt::format("Error: {}", e.what()));
+router.map_exception<ValidationError>([](const ValidationError& e) {
+    return khttpd::framework::HttpResult<ErrorResponse>(
+        boost::beast::http::status::unprocessable_entity,
+        {"VALIDATION_FAILED", e.what()});
 });
-server->get_http_router().add_exception_handler(dispatcher);
 ```
+
+`HttpException` is available when an exception should carry an HTTP status, JSON body, and validated headers directly.
+Unmapped exceptions return a generic JSON 500 response; exception details are logged server-side but are not sent to clients.
 
 ## License
 

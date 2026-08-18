@@ -7,15 +7,23 @@
 #include "context/http_response_stream.hpp"
 #include "interceptor/interceptor.hpp"
 #include "exception/exception_handler.hpp"
+#include "exception/http_exception.hpp"
+#include "router/typed_route.hpp"
 #include <functional>
 #include <string>
 #include <map>
 #include <vector>
 #include <regex>
 #include <memory>
+#include <optional>
 
 namespace khttpd::framework
 {
+  struct OpenApiInfo;
+  class HttpRouter;
+  void install_openapi_routes(HttpRouter& router, const OpenApiInfo& info,
+                              const std::string& spec_path, const std::string& docs_path, bool enabled);
+
   using HttpHandler = std::function<void(HttpContext&)>;
   using HttpAsyncComplete = std::function<void()>;
   using HttpAsyncHandler = std::function<void(HttpContext&, HttpAsyncComplete)>;
@@ -23,6 +31,14 @@ namespace khttpd::framework
   using HttpStreamHandler = std::function<void(HttpContext&, std::shared_ptr<HttpRequestStream>,
                                                std::shared_ptr<HttpResponseStream>, HttpStreamComplete)>;
   using UnknownExceptionHandler = std::function<void(HttpContext&)>;
+
+  struct RouteDescriptor
+  {
+    std::string path;
+    boost::beast::http::verb method;
+    std::optional<boost::json::value> request_schema;
+    std::optional<boost::json::value> response_schema;
+  };
 
   // 路由条目结构
   struct RouteEntry
@@ -60,6 +76,76 @@ namespace khttpd::framework
     void put(const std::string& path, HttpHandler handler);
     void del(const std::string& path, HttpHandler handler);
     void options(const std::string& path, HttpHandler handler);
+
+    template <class Handler, std::enable_if_t<!std::is_convertible_v<Handler, HttpHandler>, int> = 0>
+    void get(const std::string& path, Handler&& handler)
+    {
+      add_typed_route(path, boost::beast::http::verb::get,
+                      detail::make_typed_handler(std::forward<Handler>(handler)));
+    }
+
+    template <class Handler, std::enable_if_t<!std::is_convertible_v<Handler, HttpHandler>, int> = 0>
+    void post(const std::string& path, Handler&& handler)
+    {
+      add_typed_route(path, boost::beast::http::verb::post,
+                      detail::make_typed_handler(std::forward<Handler>(handler)));
+    }
+
+    template <class Handler, std::enable_if_t<!std::is_convertible_v<Handler, HttpHandler>, int> = 0>
+    void put(const std::string& path, Handler&& handler)
+    {
+      add_typed_route(path, boost::beast::http::verb::put,
+                      detail::make_typed_handler(std::forward<Handler>(handler)));
+    }
+
+    template <class Handler, std::enable_if_t<!std::is_convertible_v<Handler, HttpHandler>, int> = 0>
+    void del(const std::string& path, Handler&& handler)
+    {
+      add_typed_route(path, boost::beast::http::verb::delete_,
+                      detail::make_typed_handler(std::forward<Handler>(handler)));
+    }
+
+    template <class Handler, std::enable_if_t<!std::is_convertible_v<Handler, HttpHandler>, int> = 0>
+    void options(const std::string& path, Handler&& handler)
+    {
+      add_typed_route(path, boost::beast::http::verb::options,
+                      detail::make_typed_handler(std::forward<Handler>(handler)));
+    }
+
+    template <class Controller, class Method>
+    void get(const std::string& path, std::shared_ptr<Controller> controller, Method method)
+    {
+      add_typed_route(path, boost::beast::http::verb::get,
+                      detail::make_typed_member_handler(std::move(controller), method));
+    }
+
+    template <class Controller, class Method>
+    void post(const std::string& path, std::shared_ptr<Controller> controller, Method method)
+    {
+      add_typed_route(path, boost::beast::http::verb::post,
+                      detail::make_typed_member_handler(std::move(controller), method));
+    }
+
+    template <class Controller, class Method>
+    void put(const std::string& path, std::shared_ptr<Controller> controller, Method method)
+    {
+      add_typed_route(path, boost::beast::http::verb::put,
+                      detail::make_typed_member_handler(std::move(controller), method));
+    }
+
+    template <class Controller, class Method>
+    void del(const std::string& path, std::shared_ptr<Controller> controller, Method method)
+    {
+      add_typed_route(path, boost::beast::http::verb::delete_,
+                      detail::make_typed_member_handler(std::move(controller), method));
+    }
+
+    template <class Controller, class Method>
+    void options(const std::string& path, std::shared_ptr<Controller> controller, Method method)
+    {
+      add_typed_route(path, boost::beast::http::verb::options,
+                      detail::make_typed_member_handler(std::move(controller), method));
+    }
     // Async handlers must invoke complete exactly once, from any thread.
     void async_route(const std::string& path, boost::beast::http::verb method, HttpAsyncHandler handler);
     void stream(const std::string& path, boost::beast::http::verb method, HttpStreamHandler handler);
@@ -78,6 +164,15 @@ namespace khttpd::framework
 
     // Exception handling
     void add_exception_handler(std::shared_ptr<ExceptionHandlerBase> handler);
+
+    template <class Exception, class Mapper>
+    void map_exception(Mapper&& mapper)
+    {
+      using StoredMapper = std::decay_t<Mapper>;
+      add_exception_handler(std::make_shared<detail::TypedExceptionMapper<Exception, StoredMapper>>(
+        StoredMapper(std::forward<Mapper>(mapper))));
+    }
+
     void set_unknown_exception_handler(UnknownExceptionHandler handler);
     void handle_exception(std::exception_ptr eptr, HttpContext& ctx) const;
     void handle_unknown_exception(HttpContext& ctx) const;
@@ -85,14 +180,29 @@ namespace khttpd::framework
     bool dispatch(HttpContext& ctx, const std::function<bool()>& static_file_fun = nullptr) const;
     bool dispatch_async(HttpContext& ctx, HttpAsyncComplete complete) const;
 
+    // Returns handler-free copies suitable for documentation and inspection.
+    std::vector<RouteDescriptor> route_descriptors() const;
+
   private:
+    friend void install_openapi_routes(HttpRouter& router, const OpenApiInfo& info,
+                                       const std::string& spec_path, const std::string& docs_path, bool enabled);
+
     std::vector<RouteEntry> routes_;
+    std::vector<RouteDescriptor> route_descriptors_;
     std::vector<std::shared_ptr<Interceptor>> interceptors_;
 
     std::vector<std::shared_ptr<ExceptionHandlerBase>> exception_handlers_;
     UnknownExceptionHandler unknown_exception_handler_;
 
-    void add_route(const std::string& path_pattern, boost::beast::http::verb method, HttpHandler handler);
+    void add_route(const std::string& path_pattern, boost::beast::http::verb method, HttpHandler handler,
+                   std::optional<boost::json::value> request_schema = std::nullopt,
+                   std::optional<boost::json::value> response_schema = std::nullopt,
+                   bool documented = true);
+    void add_typed_route(const std::string& path_pattern, boost::beast::http::verb method,
+                         detail::TypedRouteHandler handler);
+    void record_route_descriptor(const std::string& path, boost::beast::http::verb method,
+                                 std::optional<boost::json::value> request_schema = std::nullopt,
+                                 std::optional<boost::json::value> response_schema = std::nullopt);
 
     static std::tuple<std::regex, std::vector<std::string>, int, int> parse_path_pattern(
       const std::string& path_pattern);

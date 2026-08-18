@@ -241,6 +241,121 @@ TEST(HttpSessionTest, AsyncInterceptorSeesTransportPeerAndCanDenyRequest)
   EXPECT_NE(auth->seen_peer->port(), 0);
 }
 
+TEST(HttpSessionTest, TypedRouteCannotBypassAuthorizationInterceptor)
+{
+  struct DenyAccess final : khttpd_fw::Interceptor
+  {
+    khttpd_fw::InterceptorResult handle_request(khttpd_fw::HttpContext& ctx) override
+    {
+      ctx.set_status(http::status::forbidden);
+      ctx.set_content_type("application/json");
+      ctx.set_body(R"({"code":"FORBIDDEN"})");
+      return khttpd_fw::InterceptorResult::Stop;
+    }
+  };
+
+  TempStaticTree tree;
+  khttpd_fw::HttpRouter router;
+  khttpd_fw::WebsocketRouter websocket_router;
+  int handler_calls = 0;
+  router.add_interceptor(std::make_shared<DenyAccess>());
+  router.post("/typed-private", [&handler_calls](const boost::json::object& body)
+  {
+    ++handler_calls;
+    return body;
+  });
+
+  http::request<http::string_body> req{http::verb::post, "/typed-private", 11};
+  req.set(http::field::content_type, "application/json");
+  req.body() = R"({"secret":"request"})";
+  req.prepare_payload();
+  req.keep_alive(false);
+
+  auto res = round_trip<http::string_body>(router, websocket_router, tree.web, std::move(req));
+
+  EXPECT_EQ(res.result(), http::status::forbidden);
+  EXPECT_EQ(res.body(), R"({"code":"FORBIDDEN"})");
+  EXPECT_EQ(handler_calls, 0);
+}
+
+TEST(HttpSessionTest, TypedHandlerExceptionUsesRegisteredMapper)
+{
+  class SessionValidationError : public std::runtime_error
+  {
+  public:
+    using std::runtime_error::runtime_error;
+  };
+  class SecurityHeaders final : public khttpd_fw::Interceptor
+  {
+  public:
+    void handle_response(khttpd_fw::HttpContext& ctx) override
+    {
+      ctx.set_header("X-Content-Type-Options", "nosniff");
+    }
+  };
+
+  TempStaticTree tree;
+  khttpd_fw::HttpRouter router;
+  khttpd_fw::WebsocketRouter websocket_router;
+  router.add_interceptor(std::make_shared<SecurityHeaders>());
+  router.map_exception<SessionValidationError>([](const SessionValidationError& error)
+  {
+    boost::json::object body;
+    body.emplace("code", "SESSION_VALIDATION_FAILED");
+    body.emplace("message", error.what());
+    return khttpd_fw::HttpResult<boost::json::object>(http::status::unprocessable_entity, std::move(body));
+  });
+  router.post("/typed-error", [](const boost::json::object&) -> boost::json::object
+  {
+    throw SessionValidationError("typed request rejected");
+  });
+
+  http::request<http::string_body> req{http::verb::post, "/typed-error", 11};
+  req.set(http::field::content_type, "application/json");
+  req.body() = R"({"value":1})";
+  req.prepare_payload();
+  req.keep_alive(false);
+
+  auto res = round_trip<http::string_body>(router, websocket_router, tree.web, std::move(req));
+
+  EXPECT_EQ(res.result(), http::status::unprocessable_entity);
+  EXPECT_EQ(res[http::field::content_type], "application/json");
+  EXPECT_EQ(res["X-Content-Type-Options"], "nosniff");
+  EXPECT_EQ(res.body(),
+            R"({"code":"SESSION_VALIDATION_FAILED","message":"typed request rejected"})");
+}
+
+TEST(HttpSessionTest, ThrowingPostInterceptorRunsOnlyOnceAndReturnsSafeError)
+{
+  class ThrowingPostInterceptor final : public khttpd_fw::Interceptor
+  {
+  public:
+    int calls = 0;
+
+    void handle_response(khttpd_fw::HttpContext&) override
+    {
+      ++calls;
+      throw std::runtime_error("post interceptor secret");
+    }
+  };
+
+  TempStaticTree tree;
+  khttpd_fw::HttpRouter router;
+  khttpd_fw::WebsocketRouter websocket_router;
+  auto interceptor = std::make_shared<ThrowingPostInterceptor>();
+  router.add_interceptor(interceptor);
+  router.get("/post-error", [](khttpd_fw::HttpContext& ctx) { ctx.set_body("success"); });
+
+  http::request<http::string_body> req{http::verb::get, "/post-error", 11};
+  req.keep_alive(false);
+  auto res = round_trip<http::string_body>(router, websocket_router, tree.web, std::move(req));
+
+  EXPECT_EQ(interceptor->calls, 1);
+  EXPECT_EQ(res.result(), http::status::internal_server_error);
+  EXPECT_EQ(res.body(), R"({"code":"INTERNAL_SERVER_ERROR","message":"Internal server error"})");
+  EXPECT_EQ(res.body().find("post interceptor secret"), std::string::npos);
+}
+
 TEST(HttpSessionTest, AsyncRouteCompletesResponseFromAnotherThread)
 {
   TempStaticTree tree;
