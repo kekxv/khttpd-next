@@ -1,6 +1,9 @@
 #ifndef KHTTPD_FRAMEWORK_EXCEPTION_EXCEPTION_HANDLER_HPP_
 #define KHTTPD_FRAMEWORK_EXCEPTION_EXCEPTION_HANDLER_HPP_
 
+#include "context/http_context.hpp"
+
+#include <exception>
 #include <functional>
 #include <vector>
 #include <type_traits>

@@ -13,7 +13,8 @@ public:
 
   std::shared_ptr<BaseController> register_routes(khttpd::framework::HttpRouter& router) override
   {
-    KHTTPD_ROUTE(get, "/stream/:size", handle_stream);
+    KHTTPD_DOCUMENTED_ROUTE(get, "/stream/:size", handle_stream,
+                            {"Stream response chunks", "Streams up to 100 JSON chunks for the requested size."});
 
     return shared_from_this();
   }

@@ -3,9 +3,32 @@
 #include <fmt/core.h>
 #include <spdlog/spdlog.h>
 #include <algorithm>
+#include <boost/beast/version.hpp>
+#include <stdexcept>
 
 namespace khttpd::framework
 {
+  namespace
+  {
+    void write_internal_server_error(HttpContext& ctx)
+    {
+      ctx.set_status(boost::beast::http::status::internal_server_error);
+      boost::json::object error;
+      error.emplace("code", "INTERNAL_SERVER_ERROR");
+      error.emplace("message", "Internal server error");
+      ctx.set_body_json(error);
+    }
+
+    void reset_exception_response(HttpContext& ctx)
+    {
+      auto& response = ctx.get_response();
+      response = {};
+      response.version(ctx.get_request().version());
+      response.keep_alive(ctx.get_request().keep_alive());
+      response.set(boost::beast::http::field::server, BOOST_BEAST_VERSION_STRING);
+    }
+  }
+
   HttpRouter::HttpRouter() = default;
 
   std::tuple<std::regex, std::vector<std::string>, int, int> HttpRouter::parse_path_pattern(
@@ -98,8 +121,22 @@ namespace khttpd::framework
   }
 
   void HttpRouter::add_route(const std::string& path_pattern, const boost::beast::http::verb method,
-                             HttpHandler handler)
+                             HttpHandler handler,
+                             std::optional<boost::json::value> request_schema,
+                             std::optional<boost::json::value> response_schema,
+                             const bool documented,
+                             RouteDocumentation documentation)
   {
+    if (documented)
+      record_route_descriptor(path_pattern, method, std::move(request_schema), std::move(response_schema),
+                              std::move(documentation));
+    else
+      route_descriptors_.erase(std::remove_if(route_descriptors_.begin(), route_descriptors_.end(),
+        [&](const RouteDescriptor& descriptor)
+        {
+          return descriptor.path == path_pattern && descriptor.method == method;
+        }), route_descriptors_.end());
+
     for (auto& entry : routes_)
     {
       if (entry.original_path == path_pattern)
@@ -126,9 +163,65 @@ namespace khttpd::framework
                   std::string(boost::beast::http::to_string(method)), path_pattern, literal_count, dynamic_count);
   }
 
+  void HttpRouter::add_typed_route(const std::string& path_pattern,
+                                   const boost::beast::http::verb method,
+                                   detail::TypedRouteHandler handler,
+                                   RouteDocumentation documentation)
+  {
+    add_route(path_pattern, method, std::move(handler.handler),
+              std::move(handler.request_schema), std::move(handler.response_schema), true,
+              std::move(documentation));
+  }
+
+  void HttpRouter::record_route_descriptor(const std::string& path,
+                                           const boost::beast::http::verb method,
+                                           std::optional<boost::json::value> request_schema,
+                                           std::optional<boost::json::value> response_schema,
+                                           RouteDocumentation documentation)
+  {
+    for (auto& descriptor : route_descriptors_)
+    {
+      if (descriptor.path == path && descriptor.method == method)
+      {
+        descriptor.request_schema = std::move(request_schema);
+        descriptor.response_schema = std::move(response_schema);
+        if (!documentation.summary.empty() || !documentation.description.empty())
+          descriptor.documentation = std::move(documentation);
+        return;
+      }
+    }
+    route_descriptors_.push_back(
+      {path, method, std::move(request_schema), std::move(response_schema), std::move(documentation)});
+  }
+
+  std::vector<RouteDescriptor> HttpRouter::route_descriptors() const
+  {
+    return route_descriptors_;
+  }
+
+  void HttpRouter::document_route(const std::string& path, const boost::beast::http::verb method,
+                                  RouteDocumentation documentation)
+  {
+    for (auto& descriptor : route_descriptors_)
+    {
+      if (descriptor.path == path && descriptor.method == method)
+      {
+        descriptor.documentation = std::move(documentation);
+        return;
+      }
+    }
+    throw std::invalid_argument("Cannot document an unregistered route: " + path);
+  }
+
   void HttpRouter::get(const std::string& path, HttpHandler handler)
   {
     add_route(path, boost::beast::http::verb::get, std::move(handler));
+  }
+
+  void HttpRouter::get(const std::string& path, HttpHandler handler, RouteDocumentation documentation)
+  {
+    add_route(path, boost::beast::http::verb::get, std::move(handler), std::nullopt, std::nullopt, true,
+              std::move(documentation));
   }
 
   void HttpRouter::post(const std::string& path, HttpHandler handler)
@@ -136,9 +229,21 @@ namespace khttpd::framework
     add_route(path, boost::beast::http::verb::post, std::move(handler));
   }
 
+  void HttpRouter::post(const std::string& path, HttpHandler handler, RouteDocumentation documentation)
+  {
+    add_route(path, boost::beast::http::verb::post, std::move(handler), std::nullopt, std::nullopt, true,
+              std::move(documentation));
+  }
+
   void HttpRouter::put(const std::string& path, HttpHandler handler)
   {
     add_route(path, boost::beast::http::verb::put, std::move(handler));
+  }
+
+  void HttpRouter::put(const std::string& path, HttpHandler handler, RouteDocumentation documentation)
+  {
+    add_route(path, boost::beast::http::verb::put, std::move(handler), std::nullopt, std::nullopt, true,
+              std::move(documentation));
   }
 
   void HttpRouter::del(const std::string& path, HttpHandler handler)
@@ -146,14 +251,27 @@ namespace khttpd::framework
     add_route(path, boost::beast::http::verb::delete_, std::move(handler));
   }
 
+  void HttpRouter::del(const std::string& path, HttpHandler handler, RouteDocumentation documentation)
+  {
+    add_route(path, boost::beast::http::verb::delete_, std::move(handler), std::nullopt, std::nullopt, true,
+              std::move(documentation));
+  }
+
   void HttpRouter::options(const std::string& path, HttpHandler handler)
   {
     add_route(path, boost::beast::http::verb::options, std::move(handler));
   }
 
+  void HttpRouter::options(const std::string& path, HttpHandler handler, RouteDocumentation documentation)
+  {
+    add_route(path, boost::beast::http::verb::options, std::move(handler), std::nullopt, std::nullopt, true,
+              std::move(documentation));
+  }
+
   void HttpRouter::stream(const std::string& path_pattern, const boost::beast::http::verb method,
                           HttpStreamHandler handler)
   {
+    record_route_descriptor(path_pattern, method);
     for (auto& entry : routes_)
     {
       if (entry.original_path == path_pattern)
@@ -247,6 +365,7 @@ namespace khttpd::framework
   void HttpRouter::async_route(const std::string& path, boost::beast::http::verb method,
                                HttpAsyncHandler handler)
   {
+    record_route_descriptor(path, method);
     auto [path_regex, param_names, literal_count, dynamic_count] = parse_path_pattern(path);
     for (auto& entry : routes_)
     {
@@ -394,6 +513,8 @@ namespace khttpd::framework
 
   void HttpRouter::handle_exception(std::exception_ptr eptr, HttpContext& ctx) const
   {
+    reset_exception_response(ctx);
+
     if (!eptr)
     {
       // Should not happen, but safeguard against null pointer
@@ -402,10 +523,39 @@ namespace khttpd::framework
       return;
     }
 
+    try
+    {
+      std::rethrow_exception(eptr);
+    }
+    catch (const HttpException& exception)
+    {
+      spdlog::warn("HTTP exception: {}", exception.what());
+      exception.apply(ctx);
+      return;
+    }
+    catch (...)
+    {
+    }
+
     for (const auto& handler : exception_handlers_)
     {
-      if (handler->try_handle(eptr, ctx))
+      try
       {
+        if (handler->try_handle(eptr, ctx))
+        {
+          return;
+        }
+      }
+      catch (const std::exception& mapper_error)
+      {
+        spdlog::error("Exception handler failed: {}", mapper_error.what());
+        write_internal_server_error(ctx);
+        return;
+      }
+      catch (...)
+      {
+        spdlog::error("Exception handler failed with a non-standard exception.");
+        write_internal_server_error(ctx);
         return;
       }
     }
@@ -418,9 +568,7 @@ namespace khttpd::framework
     catch (const std::exception& e)
     {
       spdlog::error("Unhandled exception: {}", e.what());
-      ctx.set_status(boost::beast::http::status::internal_server_error);
-      ctx.set_content_type("text/html");
-      ctx.set_body(fmt::format("<h1>500 Internal Server Error</h1><p>Exception: {}</p>", e.what()));
+      write_internal_server_error(ctx);
       return;
     }
     catch (...)
@@ -440,8 +588,6 @@ namespace khttpd::framework
     }
 
     spdlog::error("Unknown exception occurred.");
-    ctx.set_status(boost::beast::http::status::internal_server_error);
-    ctx.set_content_type("text/html");
-    ctx.set_body("<h1>500 Internal Server Error</h1><p>An unknown error occurred.</p>");
+    write_internal_server_error(ctx);
   }
 }

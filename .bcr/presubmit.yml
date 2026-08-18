@@ -3,6 +3,12 @@ matrix:
     - 7.x
     - 8.x
 
+module_bazel_deps:
+  - name: boost.asio
+    version: 1.90.0.bcr.1
+  - name: boost.mysql
+    version: 1.90.0.bcr.1
+
 tasks:
   verify_targets:
     name: Verify build targets
@@ -24,6 +30,7 @@ tasks:
     bazel: ${{ bazel }}
     build_flags:
       - '--cxxopt=/std:c++17'
+      - '--cxxopt=/utf-8'
       - '--@boost.asio//:ssl=boringssl'
       - '--@boost.mysql//:ssl=boringssl'
     build_targets:

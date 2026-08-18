@@ -15,7 +15,8 @@ public:
 
   std::shared_ptr<BaseController> register_routes(khttpd::framework::HttpRouter& router) override
   {
-    KHTTPD_ROUTE(get, "/hellows", handle_hello);
+    KHTTPD_DOCUMENTED_ROUTE(get, "/hellows", handle_hello,
+                            {"WebSocket echo upgrade", "Explains how to connect to the echo WebSocket endpoint."});
     return shared_from_this();
   }
 

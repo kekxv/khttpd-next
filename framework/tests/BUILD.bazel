@@ -25,9 +25,9 @@ cc_test(
     ],
     deps = [
         "//framework",
-        "@spdlog//:spdlog",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
+        "@spdlog",
     ],
 )
 
@@ -138,44 +138,98 @@ cc_test(
 
 cc_test(
     name = "buffered_body_limit_test",
-    srcs = ["buffered_body_limit_test.cpp", "http_session_test_harness.hpp"],
-    copts = ["-std=c++17", "-Wall", "-pedantic"],
-    deps = ["//framework", "@googletest//:gtest", "@googletest//:gtest_main"],
+    srcs = [
+        "buffered_body_limit_test.cpp",
+        "http_session_test_harness.hpp",
+    ],
+    copts = [
+        "-std=c++17",
+        "-Wall",
+        "-pedantic",
+    ],
+    deps = [
+        "//framework",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
 )
 
 cc_test(
     name = "http_stream_edge_test",
-    srcs = ["http_stream_edge_test.cpp", "http_session_test_harness.hpp"],
-    copts = ["-std=c++17", "-Wall", "-pedantic"],
-    deps = ["//framework", "@googletest//:gtest", "@googletest//:gtest_main"],
+    srcs = [
+        "http_session_test_harness.hpp",
+        "http_stream_edge_test.cpp",
+    ],
+    copts = [
+        "-std=c++17",
+        "-Wall",
+        "-pedantic",
+    ],
+    deps = [
+        "//framework",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
 )
 
 cc_test(
     name = "http_client_stream_edge_test",
     srcs = ["http_client_stream_edge_test.cpp"],
-    copts = ["-std=c++17", "-Wall", "-pedantic"],
-    deps = ["//framework", "@googletest//:gtest", "@googletest//:gtest_main"],
+    copts = [
+        "-std=c++17",
+        "-Wall",
+        "-pedantic",
+    ],
+    deps = [
+        "//framework",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
 )
 
 cc_test(
     name = "http_proxy_session_edge_test",
     srcs = ["http_proxy_session_edge_test.cpp"],
-    copts = ["-std=c++17", "-Wall", "-pedantic"],
-    deps = ["//framework", "@googletest//:gtest", "@googletest//:gtest_main"],
+    copts = [
+        "-std=c++17",
+        "-Wall",
+        "-pedantic",
+    ],
+    deps = [
+        "//framework",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
 )
 
 cc_test(
     name = "websocket_router_dynamic_test",
     srcs = ["websocket_router_dynamic_test.cpp"],
-    copts = ["-std=c++17", "-Wall", "-pedantic"],
-    deps = ["//framework", "@googletest//:gtest", "@googletest//:gtest_main"],
+    copts = [
+        "-std=c++17",
+        "-Wall",
+        "-pedantic",
+    ],
+    deps = [
+        "//framework",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
 )
 
 cc_test(
     name = "websocket_client_handshake_test",
     srcs = ["websocket_client_handshake_test.cpp"],
-    copts = ["-std=c++17", "-Wall", "-pedantic"],
-    deps = ["//framework", "@googletest//:gtest", "@googletest//:gtest_main"],
+    copts = [
+        "-std=c++17",
+        "-Wall",
+        "-pedantic",
+    ],
+    deps = [
+        "//framework",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
 )
 
 cc_test(
@@ -194,6 +248,36 @@ cc_test(
             "-pedantic",
         ],
     }),
+    deps = [
+        "//framework",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "typed_route_test",
+    srcs = ["typed_route_test.cpp"],
+    copts = [
+        "-std=c++17",
+        "-Wall",
+        "-pedantic",
+    ],
+    deps = [
+        "//framework",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "openapi_test",
+    srcs = ["openapi_test.cpp"],
+    copts = [
+        "-std=c++17",
+        "-Wall",
+        "-pedantic",
+    ],
     deps = [
         "//framework",
         "@googletest//:gtest",
