@@ -43,8 +43,8 @@ namespace
     ctx.set_status(beast::http::status::ok);
     ctx.set_content_type("text/html");
     ctx.set_body(
-      R"(<h1>Hello from khttpd!</h1><p>Try <a href="/hello?name=World">/hello?name=World</a> or <a href="/info">/info</a></p><p>Dynamic paths: <a href="/users/123">/users/123</a>, <a href="/users/profile">/users/profile</a>, <a href="/items/book/id/456">/items/book/id/456</a>, <a href="/files/a/b/c.txt">/files/a/b/c.txt</a></p><p>POST examples: /api/json, /api/form, /api/upload</p><p>Or connect to <a href="/ws">WebSocket</a></p><p>Or connect to <a href="/chat">WebSocket Chat</a></p>)");
-  });
+      R"(<h1>Hello from khttpd!</h1><p><a href="/docs">API documentation</a></p><p>Try <a href="/hello?name=World">/hello?name=World</a> or <a href="/info">/info</a></p><p>Dynamic paths: <a href="/users/123">/users/123</a>, <a href="/users/profile">/users/profile</a>, <a href="/items/book/id/456">/items/book/id/456</a>, <a href="/files/a/b/c.txt">/files/a/b/c.txt</a></p><p>POST examples: /api/json, /api/form, /api/upload</p><p>Or connect to <a href="/ws">WebSocket</a></p><p>Or connect to <a href="/chat">WebSocket Chat</a></p>)");
+  }, {"Example service home", "Links to the sample HTTP, streaming, WebSocket, and API documentation endpoints."});
 
   http_router.get("/hello", [](khttpd::framework::HttpContext& ctx)
   {
@@ -212,6 +212,29 @@ namespace
     ctx.set_body(
       "<h1>WebSocket Chat Endpoint</h1><p>This is a WebSocket chat endpoint. Please use a WebSocket client to connect.</p>");
   });
+
+  http_router.document_route("/hello", beast::http::verb::get,
+                             {"Greet a visitor", "Returns a text greeting for the optional name query parameter."});
+  http_router.document_route("/info", beast::http::verb::get,
+                             {"Inspect the request", "Shows the method, path, and User-Agent received by the server."});
+  http_router.document_route("/api/json", beast::http::verb::post,
+                             {"Echo JSON", "Accepts an application/json body and returns the serialized payload."});
+  http_router.document_route("/api/form", beast::http::verb::post,
+                             {"Submit a form", "Reads name and email fields from an URL-encoded form body."});
+  http_router.document_route("/api/upload", beast::http::verb::post,
+                             {"Upload multipart data", "Reads a multipart description and optional uploaded file."});
+  http_router.document_route("/users/profile", beast::http::verb::get,
+                             {"Read the current profile", "Returns the static profile example before the dynamic user route."});
+  http_router.document_route("/users/:id", beast::http::verb::get,
+                             {"Read a user", "Returns a user identifier captured from the path."});
+  http_router.document_route("/items/:category/id/:item_id", beast::http::verb::get,
+                             {"Read an item", "Shows multiple path parameters in one route."});
+  http_router.document_route("/files/:filepath", beast::http::verb::get,
+                             {"Read a file path", "Demonstrates a final greedy path parameter."});
+  http_router.document_route("/ws", beast::http::verb::get,
+                             {"WebSocket echo upgrade", "Returns upgrade guidance for the echo WebSocket endpoint."});
+  http_router.document_route("/chat", beast::http::verb::get,
+                             {"WebSocket chat upgrade", "Returns upgrade guidance for the chat WebSocket endpoint."});
 
   ws_router.add_handler(
     "/ws",

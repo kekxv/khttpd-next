@@ -44,10 +44,18 @@ import sys
 
 document = json.loads(pathlib.Path(sys.argv[1]).read_text())
 operation = document["paths"]["/typed/greetings"]["post"]
+home = document["paths"]["/"]["get"]
+hello = document["paths"]["/hello"]["get"]
+stream = document["paths"]["/stream/{size}"]["get"]
 request = operation["requestBody"]["content"]["application/json"]["schema"]
 response = operation["responses"]["200"]["content"]["application/json"]["schema"]
 assert request["properties"]["name"]["type"] == "string"
 assert response["properties"]["message"]["type"] == "string"
+assert home["summary"] == "Example service home"
+assert hello["summary"] == "Greet a visitor"
+assert stream["summary"] == "Stream response chunks"
+assert operation["summary"] == "Create a greeting"
+assert operation["description"] == "Validates a name and returns a created greeting with its Location header."
 assert "/openapi.json" not in document["paths"]
 assert "/docs" not in document["paths"]
 PY

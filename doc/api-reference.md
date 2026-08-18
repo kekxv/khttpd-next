@@ -412,10 +412,42 @@ struct RouteDescriptor {
     boost::beast::http::verb method;
     std::optional<boost::json::value> request_schema;
     std::optional<boost::json::value> response_schema;
+    RouteDocumentation documentation;
+};
+
+struct RouteDocumentation {
+    std::string summary;
+    std::string description;
 };
 ```
 
 `HttpRouter::route_descriptors()` 返回不含 handler、正则表达式、拦截器和异常映射器的副本，调用方无法借此修改路由器内部状态。
+
+### 接口说明
+
+可在普通或强类型 `get/post/put/del/options` 注册时追加 `RouteDocumentation`；原有两个参数形式保持不变：
+
+```cpp
+router.post("/messages", handle_message,
+            {"发送消息", "接收消息并返回投递结果。"});
+```
+
+对于已注册的 async 或 stream 路由，可在其后设置说明：
+
+```cpp
+router.document_route("/messages", boost::beast::http::verb::post,
+                      {"发送消息", "接收消息并返回投递结果。"});
+```
+
+`summary` 与 `description` 分别写入 OpenAPI operation 的同名字段，并显示在 `/docs`。Controller 可使用
+`KHTTPD_DOCUMENTED_ROUTE` 或 `KHTTPD_DOCUMENTED_TYPED_ROUTE`，参数形式相同：
+
+```cpp
+KHTTPD_DOCUMENTED_TYPED_ROUTE(post, "/greetings", create_greeting,
+                              {"创建问候语", "校验名称并返回新建的问候语。"});
+```
+
+调用 `document_route` 时目标路由必须已注册，否则抛出 `std::invalid_argument`。example 覆盖了 lambda 直接传入、Controller 宏和注册后补充说明三种方式。
 
 ### 生成和导出
 
@@ -439,7 +471,9 @@ struct CreateRequest { std::string name; int age; };
 BOOST_DESCRIBE_STRUCT(CreateRequest, (), (name, age))
 ```
 
-仅通过自定义 `tag_invoke` 序列化且没有 Boost.Describe 元数据的类型会退化为 `{ "type": "object" }`，不会猜测字段。`std::optional<T>` 字段不进入 `required`；字符串、布尔、整数、浮点和 `std::vector<T>` 会生成对应 schema。
+仅通过自定义 `tag_invoke` 序列化且没有 Boost.Describe 元数据的类型会退化为 `{ "type": "object", "properties": {} }`，不会猜测字段。`std::optional<T>` 字段不进入 `required`；字符串、布尔、整数、浮点和 `std::vector<T>` 会生成对应 schema。
+
+没有反射元数据的对象实际输出为 `{ "type": "object", "properties": {} }`，保证对象 schema 的结构完整，但不会虚构未知字段。整份 `openapi.json` 的根节点是 OpenAPI Document，不是一个可直接传入 OpenAI `response_format.json_schema` 的裸 JSON Schema；此类调用应选择 `paths` 下具体 request/response 的 `schema`。
 
 文件输出采用确定性路径/方法顺序并以换行结尾。空路径、无法打开或无法完整写入会抛出异常。API 不替调用方限制目标目录，因此不要把未经授权的网络输入直接作为 `output_path`。
 
@@ -455,6 +489,10 @@ void install_openapi_routes(
 ```
 
 先注册业务路由，再调用该函数。它会安装只读 JSON 与 HTML 入口，并从生成文档中隐藏自身。两个路径必须是互不相同的绝对字面路径，且不能与已有 GET 路由冲突；冲突会抛出 `std::invalid_argument`，不会覆盖业务 handler。路由仍走标准 session、前置/后置 interceptor 和授权流程，不存在单独的越权 dispatch 通道。
+
+`/docs` 与 `/openapi.json` 都由 framework 实现，example 仅演示如何调用 `install_openapi_routes`。`/docs` 是无外部 CDN 的响应式 HTML 文档页，提供 endpoint 导航、method 色标、参数表、字段化 request/response schema、请求样例、cURL 复制和在线发送。在线请求默认不携带浏览器凭据。原始规范仍可通过 `/openapi.json` 下载。
+
+页面会转义所有动态内容，并设置 CSP、`nosniff` 和 `no-referrer` 响应头。交互脚本使用每次安装时生成的 CSP nonce，不需要开放任意 inline script；若控制台仍报告其他内联脚本被拒绝，应检查浏览器扩展或开发者工具注入的脚本。
 
 传入 `enabled = false` 时函数不注册 `/openapi.json` 或 `/docs`，可用于按环境、租户或权限策略手动关闭运行时文档；离线 `export_openapi` 不受此开关影响。
 

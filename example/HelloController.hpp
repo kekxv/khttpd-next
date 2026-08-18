@@ -19,7 +19,8 @@ public:
 
   std::shared_ptr<BaseController> register_routes(khttpd::framework::HttpRouter& router) override
   {
-    KHTTPD_ROUTE(get, "/hello", handle_hello);
+    KHTTPD_DOCUMENTED_ROUTE(get, "/hello", handle_hello,
+                            {"Controller greeting", "Returns a greeting from a controller-managed route."});
 
     return shared_from_this();
   }

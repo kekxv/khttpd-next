@@ -335,6 +335,8 @@ server->run();
 
 运行时文档是普通 GET 路由，会经过与业务接口相同的 interceptor。若文档不应公开，应在现有鉴权 interceptor 中按路径或权限策略控制；不要另建绕过 session 的响应通道。安装函数拒绝控制字符、动态文档路径、两个入口重名以及已有 GET 路由冲突，避免 header/HTML 注入和静默路由覆盖。
 
+`/docs` 由 framework 服务端渲染为带 endpoint 导航、接口 summary/description、字段化 schema、cURL 复制和在线请求工具的响应式页面，不依赖第三方 JSON Schema 预览器。交互请求默认省略浏览器凭据。example 分别演示了 lambda 注册时传入说明、Controller 文档宏和对已注册路由调用 `document_route` 三种写法。这样不会把 OpenAPI 根文档误当成 OpenAI `response_format` 所要求的单一 object schema。
+
 最后一个 `enabled` 参数可手动开关运行时入口：为 `false` 时不注册 `/openapi.json` 与 `/docs`；离线导出仍可单独执行。example 同时提供 `--enable-openapi-docs` 和 `--disable-openapi-docs`。
 
 离线导出具有调用进程对目标路径的全部文件权限，并会截断已存在文件。CLI 或管理接口必须先完成目录白名单、租户边界和操作权限校验；框架只保证确定性 JSON 以及打开/写入失败可见，不负责替业务决定允许写入哪些目录。

@@ -32,12 +32,19 @@ namespace khttpd::framework
                                                std::shared_ptr<HttpResponseStream>, HttpStreamComplete)>;
   using UnknownExceptionHandler = std::function<void(HttpContext&)>;
 
+  struct RouteDocumentation
+  {
+    std::string summary;
+    std::string description;
+  };
+
   struct RouteDescriptor
   {
     std::string path;
     boost::beast::http::verb method;
     std::optional<boost::json::value> request_schema;
     std::optional<boost::json::value> response_schema;
+    RouteDocumentation documentation;
   };
 
   // 路由条目结构
@@ -77,6 +84,12 @@ namespace khttpd::framework
     void del(const std::string& path, HttpHandler handler);
     void options(const std::string& path, HttpHandler handler);
 
+    void get(const std::string& path, HttpHandler handler, RouteDocumentation documentation);
+    void post(const std::string& path, HttpHandler handler, RouteDocumentation documentation);
+    void put(const std::string& path, HttpHandler handler, RouteDocumentation documentation);
+    void del(const std::string& path, HttpHandler handler, RouteDocumentation documentation);
+    void options(const std::string& path, HttpHandler handler, RouteDocumentation documentation);
+
     template <class Handler, std::enable_if_t<!std::is_convertible_v<Handler, HttpHandler>, int> = 0>
     void get(const std::string& path, Handler&& handler)
     {
@@ -112,6 +125,41 @@ namespace khttpd::framework
                       detail::make_typed_handler(std::forward<Handler>(handler)));
     }
 
+    template <class Handler, std::enable_if_t<!std::is_convertible_v<Handler, HttpHandler>, int> = 0>
+    void get(const std::string& path, Handler&& handler, RouteDocumentation documentation)
+    {
+      add_typed_route(path, boost::beast::http::verb::get,
+                      detail::make_typed_handler(std::forward<Handler>(handler)), std::move(documentation));
+    }
+
+    template <class Handler, std::enable_if_t<!std::is_convertible_v<Handler, HttpHandler>, int> = 0>
+    void post(const std::string& path, Handler&& handler, RouteDocumentation documentation)
+    {
+      add_typed_route(path, boost::beast::http::verb::post,
+                      detail::make_typed_handler(std::forward<Handler>(handler)), std::move(documentation));
+    }
+
+    template <class Handler, std::enable_if_t<!std::is_convertible_v<Handler, HttpHandler>, int> = 0>
+    void put(const std::string& path, Handler&& handler, RouteDocumentation documentation)
+    {
+      add_typed_route(path, boost::beast::http::verb::put,
+                      detail::make_typed_handler(std::forward<Handler>(handler)), std::move(documentation));
+    }
+
+    template <class Handler, std::enable_if_t<!std::is_convertible_v<Handler, HttpHandler>, int> = 0>
+    void del(const std::string& path, Handler&& handler, RouteDocumentation documentation)
+    {
+      add_typed_route(path, boost::beast::http::verb::delete_,
+                      detail::make_typed_handler(std::forward<Handler>(handler)), std::move(documentation));
+    }
+
+    template <class Handler, std::enable_if_t<!std::is_convertible_v<Handler, HttpHandler>, int> = 0>
+    void options(const std::string& path, Handler&& handler, RouteDocumentation documentation)
+    {
+      add_typed_route(path, boost::beast::http::verb::options,
+                      detail::make_typed_handler(std::forward<Handler>(handler)), std::move(documentation));
+    }
+
     template <class Controller, class Method>
     void get(const std::string& path, std::shared_ptr<Controller> controller, Method method)
     {
@@ -145,6 +193,46 @@ namespace khttpd::framework
     {
       add_typed_route(path, boost::beast::http::verb::options,
                       detail::make_typed_member_handler(std::move(controller), method));
+    }
+
+    template <class Controller, class Method>
+    void get(const std::string& path, std::shared_ptr<Controller> controller, Method method,
+             RouteDocumentation documentation)
+    {
+      add_typed_route(path, boost::beast::http::verb::get,
+                      detail::make_typed_member_handler(std::move(controller), method), std::move(documentation));
+    }
+
+    template <class Controller, class Method>
+    void post(const std::string& path, std::shared_ptr<Controller> controller, Method method,
+              RouteDocumentation documentation)
+    {
+      add_typed_route(path, boost::beast::http::verb::post,
+                      detail::make_typed_member_handler(std::move(controller), method), std::move(documentation));
+    }
+
+    template <class Controller, class Method>
+    void put(const std::string& path, std::shared_ptr<Controller> controller, Method method,
+             RouteDocumentation documentation)
+    {
+      add_typed_route(path, boost::beast::http::verb::put,
+                      detail::make_typed_member_handler(std::move(controller), method), std::move(documentation));
+    }
+
+    template <class Controller, class Method>
+    void del(const std::string& path, std::shared_ptr<Controller> controller, Method method,
+             RouteDocumentation documentation)
+    {
+      add_typed_route(path, boost::beast::http::verb::delete_,
+                      detail::make_typed_member_handler(std::move(controller), method), std::move(documentation));
+    }
+
+    template <class Controller, class Method>
+    void options(const std::string& path, std::shared_ptr<Controller> controller, Method method,
+                 RouteDocumentation documentation)
+    {
+      add_typed_route(path, boost::beast::http::verb::options,
+                      detail::make_typed_member_handler(std::move(controller), method), std::move(documentation));
     }
     // Async handlers must invoke complete exactly once, from any thread.
     void async_route(const std::string& path, boost::beast::http::verb method, HttpAsyncHandler handler);
@@ -183,6 +271,10 @@ namespace khttpd::framework
     // Returns handler-free copies suitable for documentation and inspection.
     std::vector<RouteDescriptor> route_descriptors() const;
 
+    // Adds or replaces OpenAPI summary and description for a registered route.
+    void document_route(const std::string& path, boost::beast::http::verb method,
+                        RouteDocumentation documentation);
+
   private:
     friend void install_openapi_routes(HttpRouter& router, const OpenApiInfo& info,
                                        const std::string& spec_path, const std::string& docs_path, bool enabled);
@@ -197,12 +289,14 @@ namespace khttpd::framework
     void add_route(const std::string& path_pattern, boost::beast::http::verb method, HttpHandler handler,
                    std::optional<boost::json::value> request_schema = std::nullopt,
                    std::optional<boost::json::value> response_schema = std::nullopt,
-                   bool documented = true);
+                   bool documented = true,
+                   RouteDocumentation documentation = {});
     void add_typed_route(const std::string& path_pattern, boost::beast::http::verb method,
-                         detail::TypedRouteHandler handler);
+                         detail::TypedRouteHandler handler, RouteDocumentation documentation = {});
     void record_route_descriptor(const std::string& path, boost::beast::http::verb method,
                                  std::optional<boost::json::value> request_schema = std::nullopt,
-                                 std::optional<boost::json::value> response_schema = std::nullopt);
+                                 std::optional<boost::json::value> response_schema = std::nullopt,
+                                 RouteDocumentation documentation = {});
 
     static std::tuple<std::regex, std::vector<std::string>, int, int> parse_path_pattern(
       const std::string& path_pattern);

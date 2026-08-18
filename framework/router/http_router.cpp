@@ -4,6 +4,7 @@
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <boost/beast/version.hpp>
+#include <stdexcept>
 
 namespace khttpd::framework
 {
@@ -123,10 +124,12 @@ namespace khttpd::framework
                              HttpHandler handler,
                              std::optional<boost::json::value> request_schema,
                              std::optional<boost::json::value> response_schema,
-                             const bool documented)
+                             const bool documented,
+                             RouteDocumentation documentation)
   {
     if (documented)
-      record_route_descriptor(path_pattern, method, std::move(request_schema), std::move(response_schema));
+      record_route_descriptor(path_pattern, method, std::move(request_schema), std::move(response_schema),
+                              std::move(documentation));
     else
       route_descriptors_.erase(std::remove_if(route_descriptors_.begin(), route_descriptors_.end(),
         [&](const RouteDescriptor& descriptor)
@@ -162,16 +165,19 @@ namespace khttpd::framework
 
   void HttpRouter::add_typed_route(const std::string& path_pattern,
                                    const boost::beast::http::verb method,
-                                   detail::TypedRouteHandler handler)
+                                   detail::TypedRouteHandler handler,
+                                   RouteDocumentation documentation)
   {
     add_route(path_pattern, method, std::move(handler.handler),
-              std::move(handler.request_schema), std::move(handler.response_schema));
+              std::move(handler.request_schema), std::move(handler.response_schema), true,
+              std::move(documentation));
   }
 
   void HttpRouter::record_route_descriptor(const std::string& path,
                                            const boost::beast::http::verb method,
                                            std::optional<boost::json::value> request_schema,
-                                           std::optional<boost::json::value> response_schema)
+                                           std::optional<boost::json::value> response_schema,
+                                           RouteDocumentation documentation)
   {
     for (auto& descriptor : route_descriptors_)
     {
@@ -179,10 +185,13 @@ namespace khttpd::framework
       {
         descriptor.request_schema = std::move(request_schema);
         descriptor.response_schema = std::move(response_schema);
+        if (!documentation.summary.empty() || !documentation.description.empty())
+          descriptor.documentation = std::move(documentation);
         return;
       }
     }
-    route_descriptors_.push_back({path, method, std::move(request_schema), std::move(response_schema)});
+    route_descriptors_.push_back(
+      {path, method, std::move(request_schema), std::move(response_schema), std::move(documentation)});
   }
 
   std::vector<RouteDescriptor> HttpRouter::route_descriptors() const
@@ -190,9 +199,29 @@ namespace khttpd::framework
     return route_descriptors_;
   }
 
+  void HttpRouter::document_route(const std::string& path, const boost::beast::http::verb method,
+                                  RouteDocumentation documentation)
+  {
+    for (auto& descriptor : route_descriptors_)
+    {
+      if (descriptor.path == path && descriptor.method == method)
+      {
+        descriptor.documentation = std::move(documentation);
+        return;
+      }
+    }
+    throw std::invalid_argument("Cannot document an unregistered route: " + path);
+  }
+
   void HttpRouter::get(const std::string& path, HttpHandler handler)
   {
     add_route(path, boost::beast::http::verb::get, std::move(handler));
+  }
+
+  void HttpRouter::get(const std::string& path, HttpHandler handler, RouteDocumentation documentation)
+  {
+    add_route(path, boost::beast::http::verb::get, std::move(handler), std::nullopt, std::nullopt, true,
+              std::move(documentation));
   }
 
   void HttpRouter::post(const std::string& path, HttpHandler handler)
@@ -200,9 +229,21 @@ namespace khttpd::framework
     add_route(path, boost::beast::http::verb::post, std::move(handler));
   }
 
+  void HttpRouter::post(const std::string& path, HttpHandler handler, RouteDocumentation documentation)
+  {
+    add_route(path, boost::beast::http::verb::post, std::move(handler), std::nullopt, std::nullopt, true,
+              std::move(documentation));
+  }
+
   void HttpRouter::put(const std::string& path, HttpHandler handler)
   {
     add_route(path, boost::beast::http::verb::put, std::move(handler));
+  }
+
+  void HttpRouter::put(const std::string& path, HttpHandler handler, RouteDocumentation documentation)
+  {
+    add_route(path, boost::beast::http::verb::put, std::move(handler), std::nullopt, std::nullopt, true,
+              std::move(documentation));
   }
 
   void HttpRouter::del(const std::string& path, HttpHandler handler)
@@ -210,9 +251,21 @@ namespace khttpd::framework
     add_route(path, boost::beast::http::verb::delete_, std::move(handler));
   }
 
+  void HttpRouter::del(const std::string& path, HttpHandler handler, RouteDocumentation documentation)
+  {
+    add_route(path, boost::beast::http::verb::delete_, std::move(handler), std::nullopt, std::nullopt, true,
+              std::move(documentation));
+  }
+
   void HttpRouter::options(const std::string& path, HttpHandler handler)
   {
     add_route(path, boost::beast::http::verb::options, std::move(handler));
+  }
+
+  void HttpRouter::options(const std::string& path, HttpHandler handler, RouteDocumentation documentation)
+  {
+    add_route(path, boost::beast::http::verb::options, std::move(handler), std::nullopt, std::nullopt, true,
+              std::move(documentation));
   }
 
   void HttpRouter::stream(const std::string& path_pattern, const boost::beast::http::verb method,

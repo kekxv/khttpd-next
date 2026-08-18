@@ -28,3 +28,10 @@ sh_test(
     data = [":app"],
     tags = ["exclusive"],
 )
+
+sh_test(
+    name = "homepage_docs_link_test",
+    srcs = ["homepage_docs_link_test.sh"],
+    data = [":app"],
+    tags = ["exclusive"],
+)

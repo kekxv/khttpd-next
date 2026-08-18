@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <optional>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -42,8 +43,37 @@ struct OpenApiPetResponse
   std::vector<std::string> tags;
 };
 
+struct OpenApiOpaquePayload
+{
+  int value;
+};
+
+struct OpenApiMessageRequest
+{
+  std::string message;
+};
+
+struct OpenApiMessageResponse
+{
+  std::string message;
+};
+
+OpenApiOpaquePayload tag_invoke(boost::json::value_to_tag<OpenApiOpaquePayload>,
+                                const boost::json::value& value)
+{
+  return {boost::json::value_to<int>(value.as_object().at("value"))};
+}
+
+void tag_invoke(boost::json::value_from_tag, boost::json::value& value,
+                const OpenApiOpaquePayload& payload)
+{
+  value = {{"value", payload.value}};
+}
+
 BOOST_DESCRIBE_STRUCT(OpenApiCreatePetRequest, (), (name, age, nickname))
 BOOST_DESCRIBE_STRUCT(OpenApiPetResponse, (), (id, name, tags))
+BOOST_DESCRIBE_STRUCT(OpenApiMessageRequest, (), (message))
+BOOST_DESCRIBE_STRUCT(OpenApiMessageResponse, (), (message))
 
 #if defined(__clang__)
 #pragma clang diagnostic pop
@@ -131,6 +161,24 @@ TEST(OpenApiTest, IncludesTypedDescribeSchemas)
   EXPECT_EQ(tags.at("items").as_object().at("type"), "string");
 }
 
+TEST(OpenApiTest, EmitsPropertiesForUnreflectedObjectSchemas)
+{
+  fw::HttpRouter router;
+  router.post("/opaque", [](const OpenApiOpaquePayload& request) { return request; });
+
+  const auto document = fw::generate_openapi(router);
+  const auto& operation = operation_at(document, "/opaque", "post");
+  const auto& request_schema = operation.at("requestBody").as_object()
+    .at("content").as_object().at("application/json").as_object().at("schema").as_object();
+  const auto& response_schema = operation.at("responses").as_object().at("200").as_object()
+    .at("content").as_object().at("application/json").as_object().at("schema").as_object();
+
+  EXPECT_EQ(request_schema.at("type"), "object");
+  EXPECT_TRUE(request_schema.at("properties").as_object().empty());
+  EXPECT_EQ(response_schema.at("type"), "object");
+  EXPECT_TRUE(response_schema.at("properties").as_object().empty());
+}
+
 TEST(OpenApiTest, DocumentsAsyncAndStreamSkeletons)
 {
   fw::HttpRouter router;
@@ -166,6 +214,39 @@ TEST(OpenApiTest, ProducesDeterministicOutput)
   EXPECT_LT(first.find("\"get\""), first.find("\"post\""));
 }
 
+TEST(OpenApiTest, IncludesRouteSummaryAndDescription)
+{
+  fw::HttpRouter router;
+  router.post("/messages", [](fw::HttpContext&) {});
+  router.document_route("/messages", http::verb::post,
+                        {"Send a message", "Accepts a message and returns its delivery result."});
+
+  const auto document = fw::generate_openapi(router);
+  const auto& operation = operation_at(document, "/messages", "post");
+  EXPECT_EQ(operation.at("summary"), "Send a message");
+  EXPECT_EQ(operation.at("description"), "Accepts a message and returns its delivery result.");
+
+  fw::install_openapi_routes(router);
+  http::request<http::string_body> request(http::verb::get, "/docs", 11);
+  http::response<http::string_body> response;
+  fw::HttpContext context(request, response);
+  ASSERT_TRUE(router.dispatch(context));
+  EXPECT_NE(response.body().find("Send a message"), std::string::npos);
+  EXPECT_NE(response.body().find("Accepts a message and returns its delivery result."), std::string::npos);
+}
+
+TEST(OpenApiTest, DocumentsRouteAtRegistration)
+{
+  fw::HttpRouter router;
+  router.get("/status", [](fw::HttpContext&) {},
+             {"Service status", "Returns the current service status."});
+
+  const auto document = fw::generate_openapi(router);
+  const auto& operation = operation_at(document, "/status", "get");
+  EXPECT_EQ(operation.at("summary"), "Service status");
+  EXPECT_EQ(operation.at("description"), "Returns the current service status.");
+}
+
 TEST(OpenApiTest, ServesHiddenRuntimeDocument)
 {
   fw::HttpRouter router;
@@ -193,7 +274,65 @@ TEST(OpenApiTest, ServesHiddenRuntimeDocument)
   EXPECT_TRUE(router.dispatch(docs_context));
   EXPECT_EQ(docs_response.result(), http::status::ok);
   EXPECT_EQ(docs_response[http::field::content_type], "text/html");
+  EXPECT_EQ(docs_response["X-Content-Type-Options"], "nosniff");
+  EXPECT_NE(docs_response["Content-Security-Policy"].find("default-src 'none'"),
+            boost::beast::string_view::npos);
   EXPECT_NE(docs_response.body().find("/openapi.json"), std::string::npos);
+  EXPECT_NE(docs_response.body().find("/health"), std::string::npos);
+  EXPECT_NE(docs_response.body().find("<nav"), std::string::npos);
+  EXPECT_NE(docs_response.body().find("href=\"#get-health\""), std::string::npos);
+  EXPECT_NE(docs_response.body().find("id=\"get-health\""), std::string::npos);
+  EXPECT_NE(docs_response.body().find("Responses"), std::string::npos);
+}
+
+TEST(OpenApiTest, RendersSchemaFieldsAndInteractiveRequestTools)
+{
+  fw::HttpRouter router;
+  router.post("/messages/:channel", [](const OpenApiMessageRequest& request)
+  {
+    return OpenApiMessageResponse{request.message};
+  });
+  fw::install_openapi_routes(router, {"Message API", "1"});
+
+  http::request<http::string_body> request(http::verb::get, "/docs", 11);
+  http::response<http::string_body> response;
+  fw::HttpContext context(request, response);
+  ASSERT_TRUE(router.dispatch(context));
+
+  const auto& body = response.body();
+  EXPECT_NE(body.find("<code class=\"property-name\">message</code>"), std::string::npos);
+  EXPECT_NE(body.find("<span class=\"required\">required</span>"), std::string::npos);
+  EXPECT_NE(body.find("data-path=\"/messages/{channel}\""), std::string::npos);
+  EXPECT_NE(body.find(">Send request</button>"), std::string::npos);
+  EXPECT_NE(body.find(">Copy cURL</button>"), std::string::npos);
+  EXPECT_NE(body.find("curl -i -X POST &#39;/messages/{channel}&#39;"), std::string::npos);
+  EXPECT_NE(body.find("--data-binary &#39;{&quot;message&quot;:&quot;&quot;}&#39;"),
+            std::string::npos);
+
+  const std::string policy(response["Content-Security-Policy"]);
+  std::smatch nonce_match;
+  ASSERT_TRUE(std::regex_search(policy, nonce_match,
+                                std::regex("script-src 'nonce-([a-f0-9]{32})'")));
+  EXPECT_EQ(policy.find("script-src 'unsafe-inline'"), std::string::npos);
+  EXPECT_NE(body.find("<script nonce=\"" + nonce_match[1].str() + "\">"), std::string::npos);
+}
+
+TEST(OpenApiTest, UsesLightSurfaceForDocumentationCodeBlocks)
+{
+  fw::HttpRouter router;
+  router.post("/messages", [](const OpenApiMessageRequest& request)
+  {
+    return OpenApiMessageResponse{request.message};
+  });
+  fw::install_openapi_routes(router);
+
+  http::request<http::string_body> request(http::verb::get, "/docs", 11);
+  http::response<http::string_body> response;
+  fw::HttpContext context(request, response);
+  ASSERT_TRUE(router.dispatch(context));
+
+  EXPECT_EQ(response.body().find("background:#111827"), std::string::npos);
+  EXPECT_NE(response.body().find("background:#f8fafc"), std::string::npos);
 }
 
 TEST(OpenApiTest, DoesNotDocumentRuntimeDocumentationRoutes)
@@ -270,4 +409,25 @@ TEST(OpenApiSecurityTest, RejectsConflictingOrDynamicDocumentationPaths)
                std::invalid_argument);
   EXPECT_THROW(fw::install_openapi_routes(dynamic_router, {}, "/spec.json", "/docs\r\nInjected"),
                std::invalid_argument);
+}
+
+TEST(OpenApiSecurityTest, EscapesDynamicDocumentationContent)
+{
+  fw::HttpRouter router;
+  router.get("/unsafe/<script>", [](fw::HttpContext&) {});
+  router.get("/unsafe/'quoted", [](fw::HttpContext&) {});
+  fw::install_openapi_routes(router, {"API </title><script>alert(1)</script>", "<2>"});
+
+  http::request<http::string_body> request(http::verb::get, "/docs", 11);
+  http::response<http::string_body> response;
+  fw::HttpContext context(request, response);
+  ASSERT_TRUE(router.dispatch(context));
+
+  EXPECT_EQ(response.body().find("</title><script>"), std::string::npos);
+  EXPECT_EQ(response.body().find("/unsafe/<script>"), std::string::npos);
+  EXPECT_NE(response.body().find("API &lt;/title&gt;&lt;script&gt;alert(1)&lt;/script&gt;"),
+            std::string::npos);
+  EXPECT_NE(response.body().find("/unsafe/&lt;script&gt;"), std::string::npos);
+  EXPECT_NE(response.body().find("curl -i -X GET &#39;/unsafe/&#39;\\&#39;&#39;quoted&#39;"),
+            std::string::npos);
 }

@@ -45,7 +45,9 @@ public:
 
   std::shared_ptr<BaseController> register_routes(khttpd::framework::HttpRouter& router) override
   {
-    KHTTPD_TYPED_ROUTE(post, "/greetings", create_greeting);
+    KHTTPD_DOCUMENTED_TYPED_ROUTE(post, "/greetings", create_greeting,
+                                  {"Create a greeting",
+                                   "Validates a name and returns a created greeting with its Location header."});
     return shared_from_this();
   }
 

@@ -273,6 +273,18 @@ Route registration also records handler-free documentation metadata. Legacy rout
 parameters; typed routes additionally contribute request and response schemas. DTOs declared with `BOOST_DESCRIBE_STRUCT`
 produce field-level schemas, while DTOs that only provide custom Boost.JSON converters use a conservative `object` schema.
 
+Add a summary and a longer description when registering a route; both become standard OpenAPI operation fields and appear in
+`/docs`:
+
+```cpp
+router.post("/messages", handle_message,
+            {"Send a message", "Accepts a message and returns its delivery result."});
+```
+
+For an already registered async or stream route, call
+`router.document_route("/messages", boost::beast::http::verb::post, {"Send a message", "..."})` afterwards. Controllers
+can use `KHTTPD_DOCUMENTED_ROUTE` or `KHTTPD_DOCUMENTED_TYPED_ROUTE` with the same `RouteDocumentation` value.
+
 ```cpp
 #include "framework/router/openapi.hpp"
 
@@ -282,8 +294,19 @@ khttpd::framework::install_openapi_routes(
 // GET /openapi.json and GET /docs
 ```
 
-The example includes `POST /typed/greetings`, `HttpResult<T>` headers/status, and a serialized validation exception. Run it
-normally on port 8080, or export the exact same registered routes and exit without constructing a listening server:
+Both `/docs` and `/openapi.json` are implemented by the framework; the example only demonstrates calling
+`install_openapi_routes`. `/docs` is a responsive, dependency-free HTML view with endpoint navigation, parsed schema
+fields, generated request examples, cURL copy, and an interactive request runner. Interactive requests omit browser
+credentials by default. The exported
+`openapi.json` is an OpenAPI document, not a single JSON Schema: do not pass the whole file to an OpenAI
+`response_format.json_schema` field. Select the relevant request/response `schema` below `paths`, or convert that operation
+schema for the target consumer. Unreflected C++ object types are emitted conservatively as
+`{"type":"object","properties":{}}`.
+
+The example includes documented legacy lambda routes (`/`, `/hello`, `/api/json`), documented controller routes
+(`/stream/:size` and `/hello/hello`), and documented typed `POST /typed/greetings`, along with `HttpResult<T>`
+headers/status and a serialized validation exception. Run it normally on port 8080, or export the exact same registered
+routes and exit without constructing a listening server:
 
 ```bash
 bazel run //example:app

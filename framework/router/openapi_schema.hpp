@@ -84,6 +84,7 @@ namespace khttpd::framework::detail
       // C++17 cannot reflect arbitrary tag_invoke converters. They remain valid typed
       // routes, but their generated schema is intentionally conservative.
       schema.emplace("type", "object");
+      schema.emplace("properties", boost::json::object{});
     }
 
     return schema;
