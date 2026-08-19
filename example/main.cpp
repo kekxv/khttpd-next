@@ -33,6 +33,13 @@ namespace
       beast::http::status::bad_request,
       {"INVALID_GREETING", "The greeting name must not be empty"});
   });
+  http_router.map_exception<khttpd::framework::TypedRequestValidationError>(
+    [](const khttpd::framework::TypedRequestValidationError& error)
+  {
+    return khttpd::framework::HttpResult<GreetingErrorResponse>(
+      beast::http::status::bad_request,
+      {"INVALID_TYPED_REQUEST", error.what()});
+  });
   HelloController::create()->register_routes(http_router)->register_routes(ws_router);
   HelloStreamController::create()->register_routes(http_router)->register_routes(ws_router);
   HelloWsController::create()->register_routes(http_router)->register_routes(ws_router);
