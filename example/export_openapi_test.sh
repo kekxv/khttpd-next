@@ -50,7 +50,9 @@ stream = document["paths"]["/stream/{size}"]["get"]
 request = operation["requestBody"]["content"]["application/json"]["schema"]
 response = operation["responses"]["200"]["content"]["application/json"]["schema"]
 assert request["properties"]["name"]["type"] == "string"
+assert request["properties"]["name"]["description"] == "Name to include in the greeting."
 assert response["properties"]["message"]["type"] == "string"
+assert response["properties"]["message"]["description"] == "Greeting text returned to the caller."
 assert home["summary"] == "Example service home"
 assert hello["summary"] == "Greet a visitor"
 assert stream["summary"] == "Stream response chunks"

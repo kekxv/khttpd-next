@@ -179,6 +179,8 @@ namespace khttpd::framework
                                            std::optional<boost::json::value> response_schema,
                                            RouteDocumentation documentation)
   {
+    if (documentation.request_schema) request_schema = documentation.request_schema;
+    if (documentation.response_schema) response_schema = documentation.response_schema;
     for (auto& descriptor : route_descriptors_)
     {
       if (descriptor.path == path && descriptor.method == method)
@@ -186,7 +188,7 @@ namespace khttpd::framework
         descriptor.request_schema = std::move(request_schema);
         descriptor.response_schema = std::move(response_schema);
         if (!documentation.summary.empty() || !documentation.description.empty() ||
-            !documentation.headers.empty())
+            !documentation.headers.empty() || documentation.request_schema || documentation.response_schema)
           descriptor.documentation = std::move(documentation);
         return;
       }

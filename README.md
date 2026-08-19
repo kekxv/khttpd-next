@@ -273,6 +273,15 @@ Route registration also records handler-free documentation metadata. Legacy rout
 parameters; typed routes additionally contribute request and response schemas. DTOs declared with `BOOST_DESCRIBE_STRUCT`
 produce field-level schemas, while DTOs that only provide custom Boost.JSON converters use a conservative `object` schema.
 
+Add field descriptions after `BOOST_DESCRIBE_STRUCT` with the OpenAPI field documentation macros. They only enrich
+`openapi.json` and `/docs`; Boost.JSON conversion and the DTO remain unchanged:
+
+```cpp
+KHTTPD_OPENAPI_FIELD_DOCUMENTATION(CreateUserRequest,
+  KHTTPD_OPENAPI_FIELD(name, "Name of the new user.")
+  KHTTPD_OPENAPI_FIELD(age, "Age of the new user."))
+```
+
 Add a summary and a longer description when registering a route; both become standard OpenAPI operation fields and appear in
 `/docs`:
 
@@ -293,6 +302,17 @@ router.post("/tokens", create_token,
 
 Header metadata documents the API only; it does not authenticate or validate incoming requests. Read and validate the
 header in the handler (for example, with `HttpContext::get_header`) as part of the service's normal authorization flow.
+
+For legacy `HttpContext` handlers, provide explicit JSON Schema values as the fourth and fifth
+`RouteDocumentation` fields. They describe the request body and successful response without changing runtime parsing:
+
+```cpp
+router.post("/authorize", authorize,
+            {"Authorize", "Checks an API token.", {},
+             {{"type", "object"}, {"properties", {{"token", {{"type", "string"}}}}},
+              {"required", {"token"}}},
+             {{"type", "object"}, {"properties", {{"authorized", {{"type", "boolean"}}}}}}});
+```
 
 For an already registered async or stream route, call
 `router.document_route("/messages", boost::beast::http::verb::post, {"Send a message", "..."})` afterwards. Controllers

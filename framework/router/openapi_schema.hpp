@@ -7,8 +7,35 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
+
+namespace khttpd::framework
+{
+  // Specialize this trait for a described DTO to add OpenAPI descriptions to its fields.
+  template <class T>
+  struct OpenApiFieldDocumentation
+  {
+    static std::string_view description(std::string_view) { return {}; }
+  };
+}
+
+// Declares OpenAPI documentation for fields reflected with BOOST_DESCRIBE_STRUCT.
+// Place one KHTTPD_OPENAPI_FIELD entry per documented DTO member.
+#define KHTTPD_OPENAPI_FIELD(member, text) \
+  if (field == #member) return text;
+
+#define KHTTPD_OPENAPI_FIELD_DOCUMENTATION(Type, ...) \
+  template <> \
+  struct khttpd::framework::OpenApiFieldDocumentation<Type> \
+  { \
+    static std::string_view description(const std::string_view field) \
+    { \
+      __VA_ARGS__ \
+      return {}; \
+    } \
+  };
 
 namespace khttpd::framework::detail
 {
@@ -72,7 +99,10 @@ namespace khttpd::framework::detail
       boost::mp11::mp_for_each<Members>([&](auto descriptor)
       {
         using Member = std::remove_cv_t<std::remove_reference_t<decltype(std::declval<Value>().*descriptor.pointer)>>;
-        properties.emplace(descriptor.name, openapi_schema<Member>());
+        auto property_schema = openapi_schema<Member>().as_object();
+        const auto description = OpenApiFieldDocumentation<Value>::description(descriptor.name);
+        if (!description.empty()) property_schema.emplace("description", description);
+        properties.emplace(descriptor.name, std::move(property_schema));
         if constexpr (!is_optional_v<Member>) required.emplace_back(descriptor.name);
       });
       schema.emplace("type", "object");

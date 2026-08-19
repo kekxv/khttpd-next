@@ -29,6 +29,16 @@ BOOST_DESCRIBE_STRUCT(CreateGreetingRequest, (), (name))
 BOOST_DESCRIBE_STRUCT(GreetingResponse, (), (message))
 BOOST_DESCRIBE_STRUCT(GreetingErrorResponse, (), (code, message))
 
+KHTTPD_OPENAPI_FIELD_DOCUMENTATION(CreateGreetingRequest,
+  KHTTPD_OPENAPI_FIELD(name, "Name to include in the greeting."))
+
+KHTTPD_OPENAPI_FIELD_DOCUMENTATION(GreetingResponse,
+  KHTTPD_OPENAPI_FIELD(message, "Greeting text returned to the caller."))
+
+KHTTPD_OPENAPI_FIELD_DOCUMENTATION(GreetingErrorResponse,
+  KHTTPD_OPENAPI_FIELD(code, "Stable error code.")
+  KHTTPD_OPENAPI_FIELD(message, "Error message for the caller."))
+
 class GreetingValidationError : public std::runtime_error
 {
 public:

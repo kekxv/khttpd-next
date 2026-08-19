@@ -471,6 +471,16 @@ struct CreateRequest { std::string name; int age; };
 BOOST_DESCRIBE_STRUCT(CreateRequest, (), (name, age))
 ```
 
+为字段增加 OpenAPI `description` 时，可在 `BOOST_DESCRIBE_STRUCT` 后的命名空间作用域紧跟 DTO 写文档宏，无需手写 trait 特化：
+
+```cpp
+KHTTPD_OPENAPI_FIELD_DOCUMENTATION(CreateRequest,
+  KHTTPD_OPENAPI_FIELD(name, "要创建的名称。")
+  KHTTPD_OPENAPI_FIELD(age, "创建对象时使用的年龄。"))
+```
+
+字段说明仅写入 OpenAPI schema 与 `/docs`，不会改变 Boost.JSON 的序列化、反序列化或 DTO 对象。
+
 仅通过自定义 `tag_invoke` 序列化且没有 Boost.Describe 元数据的类型会退化为 `{ "type": "object", "properties": {} }`，不会猜测字段。`std::optional<T>` 字段不进入 `required`；字符串、布尔、整数、浮点和 `std::vector<T>` 会生成对应 schema。
 
 没有反射元数据的对象实际输出为 `{ "type": "object", "properties": {} }`，保证对象 schema 的结构完整，但不会虚构未知字段。整份 `openapi.json` 的根节点是 OpenAPI Document，不是一个可直接传入 OpenAI `response_format.json_schema` 的裸 JSON Schema；此类调用应选择 `paths` 下具体 request/response 的 `schema`。
