@@ -273,6 +273,15 @@ Route registration also records handler-free documentation metadata. Legacy rout
 parameters; typed routes additionally contribute request and response schemas. DTOs declared with `BOOST_DESCRIBE_STRUCT`
 produce field-level schemas, while DTOs that only provide custom Boost.JSON converters use a conservative `object` schema.
 
+Add field descriptions after `BOOST_DESCRIBE_STRUCT` with the OpenAPI field documentation macros. They only enrich
+`openapi.json` and `/docs`; Boost.JSON conversion and the DTO remain unchanged:
+
+```cpp
+KHTTPD_OPENAPI_FIELD_DOCUMENTATION(CreateUserRequest,
+  KHTTPD_OPENAPI_FIELD(name, "Name of the new user.")
+  KHTTPD_OPENAPI_FIELD(age, "Age of the new user."))
+```
+
 Add a summary and a longer description when registering a route; both become standard OpenAPI operation fields and appear in
 `/docs`:
 

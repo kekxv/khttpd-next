@@ -21,6 +21,22 @@ namespace khttpd::framework
   };
 }
 
+// Declares OpenAPI documentation for fields reflected with BOOST_DESCRIBE_STRUCT.
+// Place one KHTTPD_OPENAPI_FIELD entry per documented DTO member.
+#define KHTTPD_OPENAPI_FIELD(member, text) \
+  if (field == #member) return text;
+
+#define KHTTPD_OPENAPI_FIELD_DOCUMENTATION(Type, ...) \
+  template <> \
+  struct khttpd::framework::OpenApiFieldDocumentation<Type> \
+  { \
+    static std::string_view description(const std::string_view field) \
+    { \
+      __VA_ARGS__ \
+      return {}; \
+    } \
+  };
+
 namespace khttpd::framework::detail
 {
   template <class T>

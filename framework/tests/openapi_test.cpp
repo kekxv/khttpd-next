@@ -82,16 +82,9 @@ BOOST_DESCRIBE_STRUCT(OpenApiMessageRequest, (), (message))
 BOOST_DESCRIBE_STRUCT(OpenApiMessageResponse, (), (message))
 BOOST_DESCRIBE_STRUCT(OpenApiDescribedFieldsRequest, (), (token, permissions))
 
-template <>
-struct khttpd::framework::OpenApiFieldDocumentation<OpenApiDescribedFieldsRequest>
-{
-  static std::string_view description(const std::string_view name)
-  {
-    if (name == "token") return "API token to authorize.";
-    if (name == "permissions") return "Permissions required by the caller.";
-    return {};
-  }
-};
+KHTTPD_OPENAPI_FIELD_DOCUMENTATION(OpenApiDescribedFieldsRequest,
+  KHTTPD_OPENAPI_FIELD(token, "API token to authorize.")
+  KHTTPD_OPENAPI_FIELD(permissions, "Permissions required by the caller."))
 
 #if defined(__clang__)
 #pragma clang diagnostic pop
