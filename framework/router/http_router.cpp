@@ -455,7 +455,14 @@ namespace khttpd::framework
           }
           ctx.set_path_params(std::move(path_params));
 
-          method_it->second(ctx);
+          try
+          {
+            method_it->second(ctx);
+          }
+          catch (...)
+          {
+            handle_exception(std::current_exception(), ctx);
+          }
           return true;
         }
         if (request_method != boost::beast::http::verb::get && request_method != boost::beast::http::verb::head)
@@ -561,6 +568,19 @@ namespace khttpd::framework
         write_internal_server_error(ctx);
         return;
       }
+    }
+
+    try
+    {
+      std::rethrow_exception(eptr);
+    }
+    catch (const TypedRequestValidationError&)
+    {
+      detail::write_invalid_request_body(ctx);
+      return;
+    }
+    catch (...)
+    {
     }
 
     // Default handling for std::exception if no specific handler matched

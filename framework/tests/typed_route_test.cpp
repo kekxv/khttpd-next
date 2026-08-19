@@ -277,6 +277,33 @@ TEST(TypedRouteTest, InvalidBodiesReturnStableBadRequestWithoutCallingHandler)
   }
 }
 
+TEST(TypedRouteTest, MapsInvalidRequestBodiesThroughTheExceptionPipeline)
+{
+  fw::HttpRouter router;
+  int calls = 0;
+  router.map_exception<fw::TypedRequestValidationError>([](const fw::TypedRequestValidationError& error)
+  {
+    return fw::HttpResult<ErrorReply>(
+      http::status::bad_request,
+      ErrorReply{"AUTH_INVALID_REQUEST", error.what()});
+  });
+  router.post("/users", [&calls](const CreateRequest& request)
+  {
+    ++calls;
+    return Reply{request.age, request.name};
+  });
+
+  auto request = json_request("/users", R"({"name":"Ada","age":"old"})");
+  http::response<http::string_body> response;
+  auto context = make_context(request, response);
+
+  EXPECT_TRUE(router.dispatch(context));
+  EXPECT_EQ(calls, 0);
+  EXPECT_EQ(response.result(), http::status::bad_request);
+  EXPECT_EQ(response.body(),
+            R"({"code":"AUTH_INVALID_REQUEST","message":"Request body must be valid JSON matching the expected schema"})");
+}
+
 TEST(TypedRouteSecurityTest, RejectsMisleadingJsonMediaType)
 {
   fw::HttpRouter router;

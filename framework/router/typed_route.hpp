@@ -14,10 +14,21 @@
 #include <memory>
 #include <new>
 #include <optional>
+#include <stdexcept>
 #include <string_view>
 #include <type_traits>
 #include <tuple>
 #include <utility>
+
+namespace khttpd::framework
+{
+  // Thrown when a typed route cannot parse a request body before invoking its handler.
+  class TypedRequestValidationError final : public std::runtime_error
+  {
+  public:
+    using std::runtime_error::runtime_error;
+  };
+}
 
 namespace khttpd::framework::detail
 {
@@ -137,8 +148,8 @@ namespace khttpd::framework::detail
       const auto content_type = context.get_header(boost::beast::http::field::content_type);
       if (!content_type || !is_json_media_type(*content_type))
       {
-        write_invalid_request_body(context);
-        return;
+        throw TypedRequestValidationError(
+          "Request body must be valid JSON matching the expected schema");
       }
 
       std::optional<boost::json::value> json;
@@ -154,8 +165,8 @@ namespace khttpd::framework::detail
       }
       catch (const std::exception&)
       {
-        write_invalid_request_body(context);
-        return;
+        throw TypedRequestValidationError(
+          "Request body must be valid JSON matching the expected schema");
       }
 
       if constexpr (Traits::arity == 1)

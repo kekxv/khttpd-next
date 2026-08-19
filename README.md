@@ -267,6 +267,19 @@ Typed request bodies require `application/json` or an `application/*+json` media
 response without invoking the handler. Typed routes register as ordinary buffered routes, so interceptors and authorization
 checks run before them exactly as they do for legacy routes.
 
+Invalid media types, malformed JSON, and DTO conversion failures throw `TypedRequestValidationError` through the router's
+exception pipeline. Without a mapper they retain the default `400 INVALID_REQUEST_BODY` response; applications that use a
+shared error envelope can map them once for every typed route:
+
+```cpp
+router.map_exception<khttpd::framework::TypedRequestValidationError>(
+    [](const auto& error) {
+        return khttpd::framework::HttpResult<ErrorResponse>(
+            boost::beast::http::status::bad_request,
+            {"INVALID_REQUEST", error.what()});
+    });
+```
+
 ### OpenAPI 3.1 documentation
 
 Route registration also records handler-free documentation metadata. Legacy routes contribute their method, path, and path

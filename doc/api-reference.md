@@ -182,7 +182,18 @@ Response method(const Request&, HttpContext&);
 
 `Response` 可以是 JSON 可序列化裸类型、`HttpResult<T>` 或 `HttpResult<void>`。裸类型自动返回 HTTP 200。
 第二个 `HttpContext&` 参数用于读取 path/query/header/cookie 和拦截器属性。请求体必须是 `application/json`
-或 `application/*+json`；媒体类型或 JSON/DTO 转换失败时返回 HTTP 400，并且不会调用业务 handler。
+或 `application/*+json`；媒体类型或 JSON/DTO 转换失败时不会调用业务 handler，而是抛出
+`TypedRequestValidationError` 并进入 `HttpRouter` 的异常映射管线。未映射时保持默认 HTTP 400
+`INVALID_REQUEST_BODY` 响应；服务若需统一错误 envelope，可注册一次映射：
+
+```cpp
+router.map_exception<khttpd::framework::TypedRequestValidationError>(
+  [](const auto& error) {
+    return khttpd::framework::HttpResult<ErrorResponse>(
+      boost::beast::http::status::bad_request,
+      {"INVALID_REQUEST", error.what()});
+  });
+```
 
 Controller 可使用：
 
