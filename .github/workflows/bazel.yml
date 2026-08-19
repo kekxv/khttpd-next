@@ -60,8 +60,41 @@ jobs:
             build --@boost.asio//:ssl=boringssl
 
       - name: Bazel Test
+        id: test
+        shell: bash
         run: |
-          bazel test //framework/... --test_output=errors --test_verbose_timeout_warnings --verbose_failures
+          set -o pipefail
+          bazel test //framework/... --test_output=errors --test_verbose_timeout_warnings --verbose_failures 2>&1 | tee ci-test.log
+      - name: Upload failed test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: khttpd-${{ matrix.os }}-test-diagnostics
+          path: |
+            bazel-testlogs/**
+            ci-test.log
+          if-no-files-found: ignore
+          retention-days: 3
+      - name: Publish test summary
+        if: always()
+        shell: bash
+        env:
+          TEST_RESULT: ${{ steps.test.outcome }}
+          JOB_RESULT: ${{ job.status }}
+        run: |
+          {
+            echo "## khttpd framework tests (${{ matrix.os }})"
+            echo
+            echo "| Stage | Result |"
+            echo "| --- | --- |"
+            echo "| Test | ${TEST_RESULT} |"
+            echo "| Job | ${JOB_RESULT} |"
+            echo
+            echo "- Ref: \`${GITHUB_REF}\`"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          FAILED_LOG_ARTIFACT=khttpd-${{ matrix.os }}-test-diagnostics \
+            .github/scripts/write_failure_summary.sh
   example:
     needs: build
     strategy:
@@ -99,11 +132,41 @@ jobs:
             #build --@boost.mysql//:ssl=boringssl
             build --@boost.asio//:ssl=boringssl
       - name: Bazel Build example
+        id: build_example
+        shell: bash
         run: |
+          set -o pipefail
           cp .bazelrc ./example
           cd example
-          bazel build app
-          cd ..
+          bazel build app 2>&1 | tee ../ci-build.log
+      - name: Upload failed example build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: khttpd-${{ matrix.os }}-example-build-diagnostics
+          path: ci-build.log
+          if-no-files-found: ignore
+          retention-days: 3
+      - name: Publish example summary
+        if: always()
+        shell: bash
+        env:
+          BUILD_RESULT: ${{ steps.build_example.outcome }}
+          JOB_RESULT: ${{ job.status }}
+        run: |
+          {
+            echo "## khttpd example build (${{ matrix.os }})"
+            echo
+            echo "| Stage | Result |"
+            echo "| --- | --- |"
+            echo "| Build | ${BUILD_RESULT} |"
+            echo "| Job | ${JOB_RESULT} |"
+            echo
+            echo "- Ref: \`${GITHUB_REF}\`"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          FAILED_LOG_ARTIFACT=khttpd-${{ matrix.os }}-example-build-diagnostics \
+            .github/scripts/write_failure_summary.sh
 
   release:
     needs: [build, example]
