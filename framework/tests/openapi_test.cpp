@@ -58,6 +58,12 @@ struct OpenApiMessageResponse
   std::string message;
 };
 
+struct OpenApiDescribedFieldsRequest
+{
+  std::string token;
+  std::vector<std::string> permissions;
+};
+
 OpenApiOpaquePayload tag_invoke(boost::json::value_to_tag<OpenApiOpaquePayload>,
                                 const boost::json::value& value)
 {
@@ -74,6 +80,18 @@ BOOST_DESCRIBE_STRUCT(OpenApiCreatePetRequest, (), (name, age, nickname))
 BOOST_DESCRIBE_STRUCT(OpenApiPetResponse, (), (id, name, tags))
 BOOST_DESCRIBE_STRUCT(OpenApiMessageRequest, (), (message))
 BOOST_DESCRIBE_STRUCT(OpenApiMessageResponse, (), (message))
+BOOST_DESCRIBE_STRUCT(OpenApiDescribedFieldsRequest, (), (token, permissions))
+
+template <>
+struct khttpd::framework::OpenApiFieldDocumentation<OpenApiDescribedFieldsRequest>
+{
+  static std::string_view description(const std::string_view name)
+  {
+    if (name == "token") return "API token to authorize.";
+    if (name == "permissions") return "Permissions required by the caller.";
+    return {};
+  }
+};
 
 #if defined(__clang__)
 #pragma clang diagnostic pop
@@ -159,6 +177,20 @@ TEST(OpenApiTest, IncludesTypedDescribeSchemas)
   const auto& tags = response_schema.at("properties").as_object().at("tags").as_object();
   EXPECT_EQ(tags.at("type"), "array");
   EXPECT_EQ(tags.at("items").as_object().at("type"), "string");
+}
+
+TEST(OpenApiTest, IncludesFieldDescriptionsForTypedDtos)
+{
+  fw::HttpRouter router;
+  router.post("/field-descriptions", [](const OpenApiDescribedFieldsRequest&) { return true; });
+
+  const auto document = fw::generate_openapi(router);
+  const auto& request_schema = operation_at(document, "/field-descriptions", "post")
+    .at("requestBody").as_object().at("content").as_object().at("application/json").as_object()
+    .at("schema").as_object();
+  const auto& properties = request_schema.at("properties").as_object();
+  EXPECT_EQ(properties.at("token").as_object().at("description"), "API token to authorize.");
+  EXPECT_EQ(properties.at("permissions").as_object().at("description"), "Permissions required by the caller.");
 }
 
 TEST(OpenApiTest, IncludesExplicitSchemasForDocumentedLegacyRoutes)
