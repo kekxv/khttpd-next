@@ -212,6 +212,23 @@ TEST(HttpSessionTest, DynamicHeadUsesGetMetadataWithoutSendingBody)
   EXPECT_EQ(res[http::field::content_length], "14");
 }
 
+TEST(HttpSessionTest, EmptyRouteWritesZeroContentLength)
+{
+  TempStaticTree tree;
+  khttpd_fw::HttpRouter router;
+  khttpd_fw::WebsocketRouter websocket_router;
+  router.get("/empty", [](khttpd_fw::HttpContext&) {});
+
+  http::request<http::string_body> req{http::verb::get, "/empty", 11};
+  req.keep_alive(false);
+  auto res = round_trip<http::string_body>(router, websocket_router, tree.web, std::move(req));
+
+  EXPECT_EQ(res.result(), http::status::ok);
+  ASSERT_TRUE(res.has_content_length());
+  EXPECT_EQ(res[http::field::content_length], "0");
+  EXPECT_TRUE(res.body().empty());
+}
+
 TEST(HttpSessionTest, AsyncInterceptorSeesTransportPeerAndCanDenyRequest)
 {
   struct RemoteAuth final : khttpd_fw::Interceptor

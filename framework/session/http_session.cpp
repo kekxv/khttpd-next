@@ -455,7 +455,11 @@ void HttpSession::send_context_response()
     return send_response(std::move(head));
   }
   if (res_.chunked()) send_chunked_response();
-  else send_response(std::move(res_));
+  else
+  {
+    if (!res_.has_content_length()) res_.prepare_payload();
+    send_response(std::move(res_));
+  }
 }
 
 // Extract path from request target (query-stripped)
