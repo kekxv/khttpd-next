@@ -122,6 +122,39 @@ TEST(HttpRouterTest, DynamicRouteMatchingAndParamExtraction)
   ASSERT_EQ(ctx2.get_query_param("name").value(), "test"); // Query param still works
 }
 
+TEST(HttpRouterTest, BraceStyleDynamicRouteExtractsPathParameter)
+{
+  khttpd_fw::HttpRouter router;
+  std::string role;
+  router.get("/roles/{role}/permissions", [&](khttpd_fw::HttpContext& ctx)
+  {
+    role = ctx.get_path_param("role").value_or("");
+    ctx.set_status(http::status::ok);
+  });
+
+  auto req = make_request(http::verb::get, "/roles/admin/permissions");
+  http::response<http::string_body> res;
+  auto ctx = create_http_context(req, res);
+  router.dispatch(ctx);
+
+  EXPECT_EQ(res.result(), http::status::ok);
+  EXPECT_EQ(role, "admin");
+}
+
+TEST(HttpRouterTest, NotFoundUsesModernHtmlErrorPage)
+{
+  khttpd_fw::HttpRouter router;
+  auto req = make_request(http::verb::get, "/missing");
+  http::response<http::string_body> res;
+  auto ctx = create_http_context(req, res);
+  router.dispatch(ctx);
+
+  EXPECT_EQ(res.result(), http::status::not_found);
+  EXPECT_EQ(res[http::field::content_type], "text/html");
+  EXPECT_NE(res.body().find("error-card"), std::string::npos);
+  EXPECT_NE(res.body().find("404"), std::string::npos);
+}
+
 TEST(HttpRouterTest, RouteSpecificity)
 {
   khttpd_fw::HttpRouter router;
@@ -230,6 +263,7 @@ TEST(HttpRouterTest, MethodNotAllowed)
   router.dispatch(ctx);
 
   ASSERT_EQ(ctx.get_response().result(), http::status::method_not_allowed);
+  ASSERT_NE(ctx.get_response().body().find("error-card"), std::string::npos);
   ASSERT_TRUE(ctx.get_response().find(http::field::allow) != ctx.get_response().end());
   // Order might vary, but should contain GET and POST
   std::string allow_header = std::string(ctx.get_response()[http::field::allow]);

@@ -5,11 +5,39 @@
 #include <algorithm>
 #include <boost/beast/version.hpp>
 #include <stdexcept>
+#include <string_view>
 
 namespace khttpd::framework
 {
   namespace
   {
+    std::string escape_html(const std::string_view value)
+    {
+      std::string escaped;
+      escaped.reserve(value.size());
+      for (const char character : value)
+      {
+        switch (character)
+        {
+          case '&': escaped += "&amp;"; break;
+          case '<': escaped += "&lt;"; break;
+          case '>': escaped += "&gt;"; break;
+          case '\"': escaped += "&quot;"; break;
+          case '\'': escaped += "&#39;"; break;
+          default: escaped += character; break;
+        }
+      }
+      return escaped;
+    }
+
+    std::string make_html_error_page(const int status, const std::string_view title,
+                                     const std::string_view message, const std::string_view detail)
+    {
+      return fmt::format(
+        R"(<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{0} {1}</title><style>:root{{color-scheme:light}}*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:#f6f7fb;color:#182230;font:16px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}.error-card{{width:min(100%,560px);padding:32px;border:1px solid #e5e7eb;border-radius:16px;background:#fff;box-shadow:0 16px 40px rgba(15,23,42,.08)}}.error-code{{margin:0 0 10px;color:#64748b;font-size:.875rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase}}h1{{margin:0;color:#0f172a;font-size:1.5rem;line-height:1.25}}p{{margin:14px 0 0;color:#475569}}code{{display:block;overflow-wrap:anywhere;margin-top:20px;padding:10px 12px;border-radius:8px;background:#f1f5f9;color:#334155;font:0.875rem/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}}</style></head><body><main class="error-card"><p class="error-code">HTTP {0}</p><h1>{1}</h1><p>{2}</p><code>{3}</code></main></body></html>)",
+        status, escape_html(title), escape_html(message), escape_html(detail));
+    }
+
     void write_internal_server_error(HttpContext& ctx)
     {
       ctx.set_status(boost::beast::http::status::internal_server_error);
@@ -36,7 +64,7 @@ namespace khttpd::framework
   {
     std::string regex_str = "^";
     std::vector<std::string> param_names;
-    std::regex param_regex(":([a-zA-Z_][a-zA-Z0-9_]*)"); // search :paramName
+    std::regex param_regex(R"((?::([a-zA-Z_][a-zA-Z0-9_]*)|\{([a-zA-Z_][a-zA-Z0-9_]*)\}))");
 
     int literal_segments = 0;
     int dynamic_segments = 0;
@@ -79,7 +107,7 @@ namespace khttpd::framework
       }
       regex_str += std::regex_replace(literal_part, escape_regex, "\\$&");
 
-      param_names.push_back(it->str().substr(1));
+      param_names.push_back((*it)[1].matched ? (*it)[1].str() : (*it)[2].str());
       dynamic_segments++;
 
       if (current_param_index == param_count - 1)
@@ -485,8 +513,7 @@ namespace khttpd::framework
   {
     ctx.set_status(boost::beast::http::status::not_found);
     ctx.set_content_type("text/html");
-    ctx.set_body(fmt::format("<h1>404 Not Found</h1><p>The resource '{}' was not found on this server.</p>",
-                             ctx.path()));
+    ctx.set_body(make_html_error_page(404, "Not Found", "The requested resource could not be found.", ctx.path()));
     spdlog::warn("404 Not Found: {}", ctx.path());
   }
 
@@ -495,8 +522,9 @@ namespace khttpd::framework
   {
     ctx.set_status(boost::beast::http::status::method_not_allowed);
     ctx.set_content_type("text/html");
-    ctx.set_body(fmt::format("<h1>405 Method Not Allowed</h1><p>Method {} not allowed for resource '{}'.</p>",
-                             boost::beast::http::to_string(ctx.method()), ctx.path()));
+    ctx.set_body(make_html_error_page(405, "Method Not Allowed",
+                                      "The request method is not allowed for this resource.",
+                                      fmt::format("{} {}", boost::beast::http::to_string(ctx.method()), ctx.path())));
 
     std::string allowed_methods_str;
     bool first = true;
