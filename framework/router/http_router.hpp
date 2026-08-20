@@ -275,6 +275,11 @@ namespace khttpd::framework
     void handle_exception(std::exception_ptr eptr, HttpContext& ctx) const;
     void handle_unknown_exception(HttpContext& ctx) const;
 
+    // Optional service-level replacements for the framework's default HTML error pages. Pass an empty handler to reset.
+    // The context is pre-populated with the corresponding HTTP status. The 405 handler also receives Allow.
+    void set_not_found_handler(HttpHandler handler);
+    void set_method_not_allowed_handler(HttpHandler handler);
+
     bool dispatch(HttpContext& ctx, const std::function<bool()>& static_file_fun = nullptr) const;
     bool dispatch_async(HttpContext& ctx, HttpAsyncComplete complete) const;
 
@@ -295,6 +300,8 @@ namespace khttpd::framework
 
     std::vector<std::shared_ptr<ExceptionHandlerBase>> exception_handlers_;
     UnknownExceptionHandler unknown_exception_handler_;
+    HttpHandler not_found_handler_;
+    HttpHandler method_not_allowed_handler_;
 
     void add_route(const std::string& path_pattern, boost::beast::http::verb method, HttpHandler handler,
                    std::optional<boost::json::value> request_schema = std::nullopt,
@@ -311,9 +318,9 @@ namespace khttpd::framework
     static std::tuple<std::regex, std::vector<std::string>, int, int> parse_path_pattern(
       const std::string& path_pattern);
 
-    static void handle_not_found(HttpContext& ctx);
-    static void handle_method_not_allowed(HttpContext& ctx,
-                                          const std::map<boost::beast::http::verb, HttpHandler>& allowed_methods);
+    void handle_not_found(HttpContext& ctx) const;
+    void handle_method_not_allowed(HttpContext& ctx,
+                                   const std::map<boost::beast::http::verb, HttpHandler>& allowed_methods) const;
   };
 }
 #endif // KHTTPD_FRAMEWORK_ROUTER_HTTP_ROUT

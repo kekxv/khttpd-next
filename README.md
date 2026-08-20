@@ -10,8 +10,8 @@ and [Boost.Asio](https://www.boost.org/doc/libs/release/libs/asio/), managed wit
 
 - **HTTP Server** — Multi-threaded, async I/O server powered by Boost.Asio strand-based concurrency
 - **WebSocket Support** — Dynamic routes, handshake metadata, typed text/binary/control frames, and full lifecycle management
-- **Routing** — Express-style route registration with path parameters (`/users/:id`), query params, and method
-  specificity sorting
+- **Routing** — Express-style route registration with path parameters (`/users/:id` or `/users/{id}`), query params,
+  and method specificity sorting
 - **Controller Pattern** — CRTP-based `BaseController` with `KHTTPD_ROUTE` / `KHTTPD_WSROUTE` macros for clean route
   definitions
 - **Typed JSON Routes** — Request/response inference for lambdas and controller members, `HttpResult<T>` status/headers,
@@ -127,6 +127,27 @@ int main() {
 bazel build //:your_target
 bazel run //:your_target
 ```
+
+### Custom error pages
+
+The router renders responsive HTML pages for 404 and 405 responses by default. A service can replace either response
+without reimplementing route matching. The framework sets the status before calling the handler, and it sets `Allow`
+before calling a 405 handler:
+
+```cpp
+router.set_not_found_handler([](khttpd::framework::HttpContext& ctx) {
+    ctx.set_content_type("application/json");
+    ctx.set_body(R"({"error":"not_found"})"); // Status is already 404.
+});
+
+router.set_method_not_allowed_handler([](khttpd::framework::HttpContext& ctx) {
+    ctx.set_content_type("application/json");
+    ctx.set_body(R"({"error":"method_not_allowed"})"); // Status is 405; Allow is preserved.
+});
+```
+
+Pass an empty `khttpd::framework::HttpHandler{}` to either setter to restore the framework default. Custom handlers can inspect the request
+path and headers, so an auth service can return branded HTML to browsers and a JSON error envelope to API clients.
 
 ## Architecture
 

@@ -34,7 +34,7 @@ namespace khttpd::framework
                                      const std::string_view message, const std::string_view detail)
     {
       return fmt::format(
-        R"(<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{0} {1}</title><style>:root{{color-scheme:light}}*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:#f6f7fb;color:#182230;font:16px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}.error-card{{width:min(100%,560px);padding:32px;border:1px solid #e5e7eb;border-radius:16px;background:#fff;box-shadow:0 16px 40px rgba(15,23,42,.08)}}.error-code{{margin:0 0 10px;color:#64748b;font-size:.875rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase}}h1{{margin:0;color:#0f172a;font-size:1.5rem;line-height:1.25}}p{{margin:14px 0 0;color:#475569}}code{{display:block;overflow-wrap:anywhere;margin-top:20px;padding:10px 12px;border-radius:8px;background:#f1f5f9;color:#334155;font:0.875rem/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}}</style></head><body><main class="error-card"><p class="error-code">HTTP {0}</p><h1>{1}</h1><p>{2}</p><code>{3}</code></main></body></html>)",
+        R"(<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{0} {1} · khttpd</title><style>:root{{color-scheme:light}}*{{box-sizing:border-box}}body{{min-height:100vh;margin:0;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at top,#e0e7ff 0,transparent 32rem),#f8fafc;color:#172033;font:16px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}.error-card{{width:min(100%,560px);padding:28px;border:1px solid rgba(203,213,225,.8);border-radius:20px;background:rgba(255,255,255,.94);box-shadow:0 24px 60px rgba(30,41,59,.12)}}.brand{{display:flex;align-items:center;gap:8px;color:#334155;font-size:.875rem;font-weight:700;letter-spacing:.02em}}.brand::before{{width:10px;height:10px;border-radius:999px;background:linear-gradient(135deg,#6366f1,#8b5cf6);box-shadow:0 0 0 4px #eef2ff;content:""}}.error-visual{{width:72px;height:72px;display:grid;place-items:center;margin:30px 0 18px;border-radius:50%;background:linear-gradient(135deg,#eef2ff,#f5f3ff);color:#4f46e5;font-size:1.125rem;font-weight:800;letter-spacing:.04em}}.error-code{{margin:0 0 8px;color:#64748b;font-size:.75rem;font-weight:800;letter-spacing:.1em;text-transform:uppercase}}h1{{margin:0;color:#0f172a;font-size:1.75rem;line-height:1.2;letter-spacing:-.025em}}.message{{margin:12px 0 0;color:#475569}}code{{display:block;overflow-wrap:anywhere;margin-top:22px;padding:11px 12px;border:1px solid #e2e8f0;border-radius:9px;background:#f8fafc;color:#334155;font:0.8125rem/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}}.error-footer{{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:24px;color:#94a3b8;font-size:.8125rem}}.home-link{{display:inline-flex;align-items:center;padding:8px 11px;border-radius:8px;background:#4f46e5;color:#fff;font-weight:700;text-decoration:none}}.home-link:hover{{background:#4338ca}}@media (max-width:480px){{body{{padding:16px}}.error-card{{padding:24px}}}}</style></head><body><main class="error-card"><div class="brand">khttpd</div><div class="error-visual" aria-hidden="true">{0}</div><p class="error-code">HTTP {0}</p><h1>{1}</h1><p class="message">{2}</p><code>{3}</code><footer class="error-footer"><a class="home-link" href="/">Return home</a><span>HTTP {0}</span></footer></main></body></html>)",
         status, escape_html(title), escape_html(message), escape_html(detail));
     }
 
@@ -509,22 +509,24 @@ namespace khttpd::framework
     return true;
   }
 
-  void HttpRouter::handle_not_found(HttpContext& ctx)
+  void HttpRouter::handle_not_found(HttpContext& ctx) const
   {
     ctx.set_status(boost::beast::http::status::not_found);
-    ctx.set_content_type("text/html");
-    ctx.set_body(make_html_error_page(404, "Not Found", "The requested resource could not be found.", ctx.path()));
     spdlog::warn("404 Not Found: {}", ctx.path());
+    if (not_found_handler_)
+    {
+      not_found_handler_(ctx);
+      return;
+    }
+    ctx.set_content_type("text/html");
+    ctx.set_body(make_html_error_page(404, "Page not found", "The requested resource could not be found.",
+                                      ctx.path()));
   }
 
-  void HttpRouter::handle_method_not_allowed(HttpContext& ctx,
-                                             const std::map<boost::beast::http::verb, HttpHandler>& allowed_methods)
+  void HttpRouter::handle_method_not_allowed(
+    HttpContext& ctx, const std::map<boost::beast::http::verb, HttpHandler>& allowed_methods) const
   {
     ctx.set_status(boost::beast::http::status::method_not_allowed);
-    ctx.set_content_type("text/html");
-    ctx.set_body(make_html_error_page(405, "Method Not Allowed",
-                                      "The request method is not allowed for this resource.",
-                                      fmt::format("{} {}", boost::beast::http::to_string(ctx.method()), ctx.path())));
 
     std::string allowed_methods_str;
     bool first = true;
@@ -537,6 +539,17 @@ namespace khttpd::framework
     ctx.set_header(boost::beast::http::field::allow, allowed_methods_str);
     spdlog::warn("405 Method Not Allowed: {} {}", std::string(boost::beast::http::to_string(ctx.method())),
                  ctx.path());
+
+    if (method_not_allowed_handler_)
+    {
+      method_not_allowed_handler_(ctx);
+      return;
+    }
+
+    ctx.set_content_type("text/html");
+    ctx.set_body(make_html_error_page(405, "Method Not Allowed",
+                                      "The request method is not allowed for this resource.",
+                                      fmt::format("{} {}", boost::beast::http::to_string(ctx.method()), ctx.path())));
   }
 
   void HttpRouter::add_exception_handler(std::shared_ptr<ExceptionHandlerBase> handler)
@@ -547,6 +560,16 @@ namespace khttpd::framework
   void HttpRouter::set_unknown_exception_handler(UnknownExceptionHandler handler)
   {
     unknown_exception_handler_ = std::move(handler);
+  }
+
+  void HttpRouter::set_not_found_handler(HttpHandler handler)
+  {
+    not_found_handler_ = std::move(handler);
+  }
+
+  void HttpRouter::set_method_not_allowed_handler(HttpHandler handler)
+  {
+    method_not_allowed_handler_ = std::move(handler);
   }
 
   void HttpRouter::handle_exception(std::exception_ptr eptr, HttpContext& ctx) const

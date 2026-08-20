@@ -153,6 +153,51 @@ TEST(HttpRouterTest, NotFoundUsesModernHtmlErrorPage)
   EXPECT_EQ(res[http::field::content_type], "text/html");
   EXPECT_NE(res.body().find("error-card"), std::string::npos);
   EXPECT_NE(res.body().find("404"), std::string::npos);
+  EXPECT_NE(res.body().find("khttpd"), std::string::npos);
+  EXPECT_NE(res.body().find("Page not found"), std::string::npos);
+  EXPECT_NE(res.body().find("Return home"), std::string::npos);
+  EXPECT_NE(res.body().find("/missing"), std::string::npos);
+}
+
+TEST(HttpRouterTest, CustomNotFoundHandlerReplacesDefaultResponse)
+{
+  khttpd_fw::HttpRouter router;
+  router.set_not_found_handler([](khttpd_fw::HttpContext& ctx)
+  {
+    ctx.set_content_type("application/json");
+    ctx.set_body(R"({"error":"custom"})");
+  });
+
+  auto req = make_request(http::verb::get, "/missing");
+  http::response<http::string_body> res;
+  auto ctx = create_http_context(req, res);
+  router.dispatch(ctx);
+
+  EXPECT_EQ(res.result(), http::status::not_found);
+  EXPECT_EQ(res[http::field::content_type], "application/json");
+  EXPECT_EQ(res.body(), R"({"error":"custom"})");
+}
+
+TEST(HttpRouterTest, CustomMethodNotAllowedHandlerKeepsAllowHeader)
+{
+  khttpd_fw::HttpRouter router;
+  std::string allowed_during_handler;
+  router.get("/resource", []([[maybe_unused]] khttpd_fw::HttpContext& ctx) {});
+  router.set_method_not_allowed_handler([&allowed_during_handler](khttpd_fw::HttpContext& ctx)
+  {
+    allowed_during_handler = std::string(ctx.get_response()[http::field::allow]);
+    ctx.set_body("custom method response");
+  });
+
+  auto req = make_request(http::verb::post, "/resource");
+  http::response<http::string_body> res;
+  auto ctx = create_http_context(req, res);
+  router.dispatch(ctx);
+
+  EXPECT_EQ(res.result(), http::status::method_not_allowed);
+  EXPECT_EQ(res.body(), "custom method response");
+  EXPECT_EQ(allowed_during_handler, "GET");
+  EXPECT_EQ(res[http::field::allow], "GET");
 }
 
 TEST(HttpRouterTest, RouteSpecificity)
