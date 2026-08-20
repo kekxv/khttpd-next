@@ -8,7 +8,7 @@ bazel_dep(name = "boost", version = "1.90.0.bcr.1")
 bazel_dep(name = "boost.asio", version = "1.90.0.bcr.1")
 bazel_dep(name = "boost.mysql", version = "1.90.0.bcr.1")
 bazel_dep(name = "spdlog", version = "1.17.0")
-bazel_dep(name = "khttpd", version = "0.4.2")
+bazel_dep(name = "khttpd", version = "0.4.4")
 local_path_override(
     module_name = "khttpd",
     path = "..",
