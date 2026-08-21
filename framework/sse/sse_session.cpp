@@ -14,6 +14,9 @@ namespace khttpd::framework::sse
     bool keep_alive;
     mutable std::mutex mutex;
     std::deque<std::shared_ptr<std::string>> queue;
+    std::size_t pending_bytes = 0;
+    std::size_t max_pending_bytes;
+    bool start_requested = false;
     bool started = false;
     bool writing = false;
     bool closing = false;
@@ -21,11 +24,18 @@ namespace khttpd::framework::sse
     boost::system::error_code close_error;
     CloseHandler close_handler;
 
-    Impl(std::shared_ptr<HttpResponseStream> value, const int v, const bool keep)
-      : response(std::move(value)), version(v), keep_alive(keep) {}
+    Impl(std::shared_ptr<HttpResponseStream> value, const int v, const bool keep,
+         const std::size_t maximum_pending_bytes)
+      : response(std::move(value)), version(v), keep_alive(keep),
+        max_pending_bytes(maximum_pending_bytes) {}
 
     void start()
     {
+      {
+        std::lock_guard lock(mutex);
+        if (start_requested || closed) return;
+        start_requested = true;
+      }
       HttpResponseStream::ResponseHead head{boost::beast::http::status::ok, version};
       head.keep_alive(keep_alive);
       head.set(boost::beast::http::field::content_type, "text/event-stream");
@@ -44,6 +54,8 @@ namespace khttpd::framework::sse
       {
         std::lock_guard lock(mutex);
         if (closing || closed) return false;
+        if (value.size() > max_pending_bytes || pending_bytes > max_pending_bytes - value.size()) return false;
+        pending_bytes += value.size();
         queue.push_back(std::make_shared<std::string>(std::move(value)));
       }
       write_next();
@@ -80,7 +92,11 @@ namespace khttpd::framework::sse
           if (ec) return self->finish(ec);
           {
             std::lock_guard lock(self->mutex);
-            if (!self->queue.empty()) self->queue.pop_front();
+            if (!self->queue.empty())
+            {
+              self->pending_bytes -= self->queue.front()->size();
+              self->queue.pop_front();
+            }
             self->writing = false;
           }
           self->write_next();
@@ -96,6 +112,7 @@ namespace khttpd::framework::sse
         closed = true;
         close_error = ec;
         writing = false;
+        pending_bytes = 0;
         queue.clear();
         handler = std::move(close_handler);
       }
@@ -103,8 +120,9 @@ namespace khttpd::framework::sse
     }
   };
 
-  SseSession::SseSession(std::shared_ptr<HttpResponseStream> response, const int version, const bool keep_alive)
-    : impl_(std::make_shared<Impl>(std::move(response), version, keep_alive)) {}
+  SseSession::SseSession(std::shared_ptr<HttpResponseStream> response, const int version, const bool keep_alive,
+                         const std::size_t max_pending_bytes)
+    : impl_(std::make_shared<Impl>(std::move(response), version, keep_alive, max_pending_bytes)) {}
   void SseSession::start() { impl_->start(); }
   bool SseSession::send(SseEvent event) { return impl_->enqueue(format_sse_event(event)); }
   bool SseSession::send_comment(std::string comment) { return impl_->enqueue(format_sse_comment(comment)); }

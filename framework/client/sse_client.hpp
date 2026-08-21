@@ -4,6 +4,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ssl/context.hpp>
 #include <boost/system/error_code.hpp>
+#include <cstddef>
 #include <functional>
 #include <map>
 #include <memory>
@@ -19,8 +20,10 @@ namespace khttpd::framework::client
     using EventHandler = std::function<void(const sse::SseEvent&)>;
     using CloseHandler = std::function<void(boost::system::error_code)>;
 
-    explicit SseClient(boost::asio::io_context& ioc);
-    SseClient(boost::asio::io_context& ioc, boost::asio::ssl::context& ssl_context);
+    explicit SseClient(boost::asio::io_context& ioc,
+                       std::size_t max_event_bytes = 1024 * 1024);
+    SseClient(boost::asio::io_context& ioc, boost::asio::ssl::context& ssl_context,
+              std::size_t max_event_bytes = 1024 * 1024);
     ~SseClient();
 
     SseClient(const SseClient&) = delete;

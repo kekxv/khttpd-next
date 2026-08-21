@@ -249,7 +249,8 @@ namespace khttpd::framework
     // Async handlers must invoke complete exactly once, from any thread.
     void async_route(const std::string& path, boost::beast::http::verb method, HttpAsyncHandler handler);
     void stream(const std::string& path, boost::beast::http::verb method, HttpStreamHandler handler);
-    void sse(const std::string& path, SseHandler handler);
+    void sse(const std::string& path, SseHandler handler,
+             std::size_t max_pending_bytes = 1024 * 1024);
 
     // Used by HttpSession after it has parsed only the request header.
     bool is_stream_route(const std::string& path, boost::beast::http::verb method) const;

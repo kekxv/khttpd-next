@@ -7,6 +7,7 @@
 #include <array>
 #include <cctype>
 #include <mutex>
+#include <stdexcept>
 #include <utility>
 
 #include "client/http_client_stream.hpp"
@@ -46,9 +47,10 @@ namespace khttpd::framework::client
     bool connect_started = false;
     bool terminal = false;
 
-    explicit Impl(net::io_context& ioc) : stream(std::make_shared<HttpClientStream>(ioc)) {}
-    Impl(net::io_context& ioc, net::ssl::context& context)
-      : stream(std::make_shared<HttpClientStream>(ioc, context)) {}
+    Impl(net::io_context& ioc, const std::size_t max_event_bytes)
+      : stream(std::make_shared<HttpClientStream>(ioc)), parser(max_event_bytes) {}
+    Impl(net::io_context& ioc, net::ssl::context& context, const std::size_t max_event_bytes)
+      : stream(std::make_shared<HttpClientStream>(ioc, context)), parser(max_event_bytes) {}
 
     void connect(const std::string& url,
                  const std::map<std::string, std::string>& headers,
@@ -110,8 +112,15 @@ namespace khttpd::framework::client
         {
           if (size != 0)
           {
-            const auto events = self->parser.feed(std::string_view(self->read_buffer.data(), size));
-            for (const auto& event : events) self->emit(event);
+            try
+            {
+              const auto events = self->parser.feed(std::string_view(self->read_buffer.data(), size));
+              for (const auto& event : events) self->emit(event);
+            }
+            catch (const std::length_error&)
+            {
+              return self->finish(net::error::message_size);
+            }
           }
           if (self->is_terminal()) return;
           if (done) return self->finish({});
@@ -170,9 +179,11 @@ namespace khttpd::framework::client
     }
   };
 
-  SseClient::SseClient(net::io_context& ioc) : impl_(std::make_shared<Impl>(ioc)) {}
-  SseClient::SseClient(net::io_context& ioc, net::ssl::context& context)
-    : impl_(std::make_shared<Impl>(ioc, context)) {}
+  SseClient::SseClient(net::io_context& ioc, const std::size_t max_event_bytes)
+    : impl_(std::make_shared<Impl>(ioc, max_event_bytes)) {}
+  SseClient::SseClient(net::io_context& ioc, net::ssl::context& context,
+                       const std::size_t max_event_bytes)
+    : impl_(std::make_shared<Impl>(ioc, context, max_event_bytes)) {}
   SseClient::~SseClient() { if (impl_) impl_->abandon(); }
   void SseClient::connect(const std::string& url,
                           const std::map<std::string, std::string>& headers,

@@ -3,6 +3,7 @@
 #include <boost/asio.hpp>
 #include <boost/beast/http.hpp>
 #include <atomic>
+#include <stdexcept>
 #include <thread>
 
 #include "client/sse_client.hpp"
@@ -62,6 +63,39 @@ TEST(SseEventTest, FormatsEveryDataLineAndOptionalFields)
             "event: instances\nid: 9\nretry: 2500\ndata: one\ndata: two\n\n");
 }
 
+TEST(SseEventTest, BareCarriageReturnsCannotInjectEventFields)
+{
+  sse::SseEvent event{"config", "safe\rid: injected\r\nretry: 1", "trusted", std::nullopt};
+  EXPECT_EQ(sse::format_sse_event(event),
+            "event: config\nid: trusted\ndata: safe\ndata: id: injected\ndata: retry: 1\n\n");
+}
+
+TEST(SseParserTest, RejectsAnEventThatExceedsItsConfiguredMemoryLimit)
+{
+  sse::SseParser parser(32);
+  EXPECT_THROW(parser.feed("data: " + std::string(33, 'x') + "\n"), std::length_error);
+}
+
+TEST(SseParserTest, LimitAppliesPerEventRatherThanPerNetworkRead)
+{
+  sse::SseParser parser(32);
+  const auto events = parser.feed("data: one\n\ndata: two\n\ndata: three\n\n");
+
+  ASSERT_EQ(events.size(), 3U);
+  EXPECT_EQ(events[0].data, "one");
+  EXPECT_EQ(events[1].data, "two");
+  EXPECT_EQ(events[2].data, "three");
+}
+
+TEST(SseParserTest, MinimalLimitStillConsumesAFragmentedUtf8Bom)
+{
+  sse::SseParser parser(1);
+  EXPECT_TRUE(parser.feed("\xef").empty());
+  EXPECT_TRUE(parser.feed("\xbb").empty());
+  EXPECT_TRUE(parser.feed("\xbf").empty());
+  EXPECT_THROW(parser.feed("ab"), std::length_error);
+}
+
 TEST(SseSessionTest, StreamsQueuedEventsInOrderWithSseHeaders)
 {
   test::TempWebRoot web_root;
@@ -82,6 +116,114 @@ TEST(SseSessionTest, StreamsQueuedEventsInOrderWithSseHeaders)
   EXPECT_EQ(response[http::field::cache_control], "no-cache");
   EXPECT_EQ(response["X-Accel-Buffering"], "no");
   EXPECT_EQ(response.body(), "event: config\nid: 1\ndata: first\n\nevent: instances\nid: 2\ndata: second\n\n");
+}
+
+TEST(SseSessionTest, RejectsWritesBeyondTheConfiguredQueueLimit)
+{
+  test::TempWebRoot web_root;
+  fw::HttpRouter router;
+  fw::WebsocketRouter websocket_router;
+  bool accepted = true;
+  router.sse("/events", [&](fw::HttpContext&, std::shared_ptr<sse::SseSession> session)
+  {
+    accepted = session->send({"message", std::string(64, 'x'), "", std::nullopt});
+    session->close();
+  }, 32);
+  http::request<http::string_body> request{http::verb::get, "/events", 11};
+  request.keep_alive(false);
+  const auto response = test::round_trip(router, websocket_router, web_root.path, std::move(request));
+
+  EXPECT_FALSE(accepted);
+  EXPECT_TRUE(response.body().empty());
+}
+
+TEST(SseSessionTest, RequestBodiesForceConnectionCloseToPreventDesynchronization)
+{
+  test::TempWebRoot web_root;
+  fw::HttpRouter router;
+  fw::WebsocketRouter websocket_router;
+  router.sse("/events", [](fw::HttpContext&, std::shared_ptr<sse::SseSession> session)
+  {
+    session->send({"message", "ready", "", std::nullopt});
+    session->close();
+  });
+  http::request<http::string_body> request{http::verb::get, "/events", 11};
+  request.body() = "unconsumed-body";
+  request.prepare_payload();
+  request.keep_alive(true);
+  const auto response = test::round_trip(router, websocket_router, web_root.path, std::move(request));
+
+  EXPECT_FALSE(response.keep_alive());
+  EXPECT_EQ(response.body(), "event: message\ndata: ready\n\n");
+}
+
+TEST(SseSessionTest, PreRequestInterceptorCanDenyTheStreamBeforeItsHandlerRuns)
+{
+  class DenyInterceptor final : public fw::Interceptor
+  {
+  public:
+    fw::InterceptorResult handle_request(fw::HttpContext& ctx) override
+    {
+      ctx.set_status(http::status::forbidden);
+      ctx.set_body("denied");
+      return fw::InterceptorResult::Stop;
+    }
+  };
+
+  test::TempWebRoot web_root;
+  fw::HttpRouter router;
+  fw::WebsocketRouter websocket_router;
+  bool handler_called = false;
+  router.add_interceptor(std::make_shared<DenyInterceptor>());
+  router.sse("/events", [&](fw::HttpContext&, std::shared_ptr<sse::SseSession>)
+  {
+    handler_called = true;
+  });
+  http::request<http::string_body> request{http::verb::get, "/events", 11};
+  request.keep_alive(false);
+  const auto response = test::round_trip(router, websocket_router, web_root.path, std::move(request));
+
+  EXPECT_EQ(response.result(), http::status::forbidden);
+  EXPECT_EQ(response.body(), "denied");
+  EXPECT_FALSE(handler_called);
+}
+
+TEST(SseSessionTest, ThrowingHandlerReturnsOneSafeErrorResponse)
+{
+  test::TempWebRoot web_root;
+  fw::HttpRouter router;
+  fw::WebsocketRouter websocket_router;
+  router.sse("/events", [](fw::HttpContext&, std::shared_ptr<sse::SseSession>)
+  {
+    throw std::runtime_error("sensitive SSE failure");
+  });
+  http::request<http::string_body> request{http::verb::get, "/events", 11};
+  request.keep_alive(false);
+  const auto response = test::round_trip(router, websocket_router, web_root.path, std::move(request));
+
+  EXPECT_EQ(response.result(), http::status::internal_server_error);
+  EXPECT_EQ(response[http::field::content_type], "application/json");
+  EXPECT_EQ(response.body(), R"({"code":"INTERNAL_SERVER_ERROR","message":"Internal server error"})");
+  EXPECT_EQ(response.body().find("sensitive SSE failure"), std::string::npos);
+}
+
+TEST(SseSessionTest, ExplicitStartInsideRouteHandlerIsIdempotent)
+{
+  test::TempWebRoot web_root;
+  fw::HttpRouter router;
+  fw::WebsocketRouter websocket_router;
+  router.sse("/events", [](fw::HttpContext&, std::shared_ptr<sse::SseSession> session)
+  {
+    session->start();
+    session->send({"message", "ready", "", std::nullopt});
+    session->close();
+  });
+  http::request<http::string_body> request{http::verb::get, "/events", 11};
+  request.keep_alive(false);
+  const auto response = test::round_trip(router, websocket_router, web_root.path, std::move(request));
+
+  EXPECT_EQ(response.result(), http::status::ok);
+  EXPECT_EQ(response.body(), "event: message\ndata: ready\n\n");
 }
 
 TEST(SseClientTest, DeliversEventsFromAnAsyncEventStream)
@@ -205,4 +347,40 @@ TEST(SseClientTest, RejectsANonEventStreamResponse)
   server.join();
 
   EXPECT_EQ(closed_with, make_error_code(boost::system::errc::protocol_error));
+}
+
+TEST(SseClientTest, ClosesAnEventStreamThatExceedsTheConfiguredLimit)
+{
+  net::io_context server_ioc;
+  tcp::acceptor acceptor(server_ioc, {net::ip::address_v4::loopback(), 0});
+  const auto port = acceptor.local_endpoint().port();
+  std::thread server([&]
+  {
+    tcp::socket socket(server_ioc);
+    acceptor.accept(socket);
+    boost::beast::flat_buffer buffer;
+    http::request<http::empty_body> request;
+    http::read(socket, buffer, request);
+    const std::string wire =
+      "HTTP/1.1 200 OK\r\n"
+      "Content-Type: text/event-stream\r\n"
+      "Connection: close\r\n\r\n"
+      "data: " + std::string(64, 'x') + "\n\n";
+    boost::system::error_code ignored;
+    net::write(socket, net::buffer(wire), ignored);
+  });
+
+  net::io_context ioc;
+  auto stream = std::make_shared<client::SseClient>(ioc, 32);
+  int close_count = 0;
+  boost::system::error_code closed_with;
+  stream->connect(
+    "http://127.0.0.1:" + std::to_string(port) + "/events", {},
+    [](const sse::SseEvent&) { FAIL() << "oversized SSE response emitted an event"; },
+    [&](boost::system::error_code ec) { ++close_count; closed_with = ec; });
+  ioc.run();
+  server.join();
+
+  EXPECT_EQ(close_count, 1);
+  EXPECT_EQ(closed_with, net::error::message_size);
 }

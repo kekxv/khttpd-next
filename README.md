@@ -448,12 +448,19 @@ router.sse("/events",
   });
 ```
 
+The optional third `router.sse` argument sets the maximum queued wire bytes per
+connection (1 MiB by default). `send()` returns `false` when that limit would be
+exceeded, allowing the application to drop or resynchronize a slow subscriber.
+SSE routes run the ordinary pre-request interceptor chain before their handler;
+an authentication or authorization interceptor can reject the request before
+any event-stream response headers are written.
+
 `SseClient` uses the same fixed-buffer streaming transport and delivers each
 complete event as soon as it arrives. Arbitrarily split lines, CRLF/LF,
 multiline `data`, comments, `id`, and numeric `retry` fields are supported.
 
 ```cpp
-auto events = std::make_shared<client::SseClient>(ioc);
+auto events = std::make_shared<client::SseClient>(ioc); // 1 MiB event limit
 events->connect(
   "https://config.internal/events",
   {{"Authorization", "Bearer internal-token"}, {"Last-Event-ID", "41"}},
@@ -469,6 +476,8 @@ Keep the `SseClient` alive for the duration of the subscription. `cancel()`
 closes the transport and completes the close callback once with
 `operation_aborted`. Automatic reconnect is intentionally left to the caller,
 which can apply service-specific backoff and send `Last-Event-ID`.
+The optional constructor limit bounds an unfinished line or event; exceeding it
+closes only that subscription and reports `message_size`.
 
 ### Tests
 

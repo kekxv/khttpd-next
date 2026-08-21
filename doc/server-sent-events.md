@@ -28,6 +28,16 @@ router.sse("/events",
   });
 ```
 
+`router.sse` 的可选第三个参数用于设置单连接待发送队列的字节上限，默认 1 MiB：
+
+```cpp
+router.sse("/events", handler, 256 * 1024);
+```
+
+队列即将超过上限时 `send()` 返回 `false`，业务可丢弃慢订阅者或触发全量同步，
+不会继续占用内存。SSE 路由在 handler 前运行普通的全局同步/异步拦截器，鉴权或
+权限拦截器返回 `Stop` 时不会发送 SSE 响应头，也不会执行 handler。
+
 响应会包含 `Content-Type: text/event-stream`、`Cache-Control: no-cache` 和
 `X-Accel-Buffering: no`，正文使用 HTTP 分块传输。`send()` 和
 `send_comment()` 可从不同线程调用，内部拥有待写入字符串并按 FIFO 顺序串行写入，
@@ -45,7 +55,7 @@ router.sse("/events",
 ```cpp
 #include "client/sse_client.hpp"
 
-auto subscription = std::make_shared<client::SseClient>(ioc);
+auto subscription = std::make_shared<client::SseClient>(ioc); // 默认单事件上限 1 MiB
 subscription->connect(
   "https://config.internal/events",
   {
@@ -67,6 +77,8 @@ subscription->connect(
 调用方需要在订阅期间持有 `SseClient`。显式调用 `cancel()` 会关闭传输，并以
 `operation_aborted` 调用一次关闭回调。框架不自动重连：调用方可以结合事件的
 `retry`、指数退避和 `Last-Event-ID` 实现符合具体服务需求的恢复策略。
+构造函数的可选字节上限用于限制未完成行或单个事件；超限只会关闭当前订阅，并以
+`message_size` 完成关闭回调，不会终止进程。
 
 ## 选择 SSE 还是 WebSocket
 
