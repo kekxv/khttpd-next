@@ -23,6 +23,7 @@ and [Boost.Asio](https://www.boost.org/doc/libs/release/libs/asio/), managed wit
 - **Exception Handling** — Type-safe exception dispatcher with per-type handlers
 - **Chunked Streaming** — Server-sent chunked transfer encoding via `HttpContext::chunked()`
 - **Bidirectional HTTP Streaming** — Header-first request routing, fixed-buffer upload/download, proxy backpressure, and Range forwarding
+- **Async Server-Sent Events** — Non-blocking SSE routes and client with incremental parsing, cancellation, and backpressure
 - **Cookie Support** — Read / write cookies with configurable `CookieOptions` (path, domain, SameSite, etc.)
 - **Form & Multipart** — `application/x-www-form-urlencoded` and `multipart/form-data` parsing (file uploads)
 - **JSON** — Native `boost::json` integration with `get_json()`, `set_body_json()`, `set_body_from()`
@@ -168,6 +169,7 @@ framework/
 ├── client/
 │   ├── http_client.hpp/cpp     # Sync/async HTTP client with SSL
 │   ├── http_client_stream.hpp/cpp # Fixed-buffer HTTP streaming client
+│   ├── sse_client.hpp/cpp      # Async Server-Sent Events client
 │   ├── http_proxy_session.hpp/cpp # Bidirectional streaming proxy pump
 │   └── websocket_client.hpp/cpp # WebSocket client
 ├── interceptor/
@@ -182,6 +184,9 @@ framework/
 │   └── di_container.hpp        # Type-indexed DI container (singleton)
 ├── session/
 │   └── http_session.hpp/cpp    # Per-connection HTTP session
+├── sse/
+│   ├── sse_parser.hpp/cpp      # Incremental SSE parser and wire formatting
+│   └── sse_session.hpp/cpp     # Async server-side SSE write queue
 └── websocket/
     └── websocket_session.hpp/cpp # Per-connection WebSocket session
 ```
@@ -420,6 +425,50 @@ the proxy buffer defaults to 64 KiB and can be configured in its constructor.
 fixed-buffer behavior. Its default TLS context verifies the system trust store;
 an application can inject an `ssl::context` into `HttpClientStream` or
 `HttpProxySession` for private CAs and test certificates.
+
+### Async Server-Sent Events
+
+Register an SSE endpoint with `HttpRouter::sse`. The session serializes writes
+through an owned queue, so callers may publish from different threads without
+keeping event strings alive until the socket write completes.
+
+```cpp
+router.sse("/events",
+  [](HttpContext&, std::shared_ptr<sse::SseSession> session)
+  {
+    session->on_close([](boost::system::error_code ec) {
+      // Remove the subscriber from application state.
+    });
+    session->send({"config", R"({"name":"app.yaml"})", "42", 3000});
+    session->send_comment("heartbeat");
+
+    // Retain session in the application's subscriber collection when more
+    // events will be sent after this handler returns. Call close() for a
+    // graceful final chunk or cancel() to abort the connection.
+  });
+```
+
+`SseClient` uses the same fixed-buffer streaming transport and delivers each
+complete event as soon as it arrives. Arbitrarily split lines, CRLF/LF,
+multiline `data`, comments, `id`, and numeric `retry` fields are supported.
+
+```cpp
+auto events = std::make_shared<client::SseClient>(ioc);
+events->connect(
+  "https://config.internal/events",
+  {{"Authorization", "Bearer internal-token"}, {"Last-Event-ID", "41"}},
+  [](const sse::SseEvent& event) {
+    // event.event, event.data, event.id, event.retry
+  },
+  [](boost::system::error_code ec) {
+    // Schedule reconnect/backoff in application code when appropriate.
+  });
+```
+
+Keep the `SseClient` alive for the duration of the subscription. `cancel()`
+closes the transport and completes the close callback once with
+`operation_aborted`. Automatic reconnect is intentionally left to the caller,
+which can apply service-specific backoff and send `Last-Event-ID`.
 
 ### Tests
 

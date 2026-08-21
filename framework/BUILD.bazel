@@ -6,6 +6,7 @@ cc_library(
     srcs = glob([
         "*.cpp",
         "router/*.cpp",
+        "sse/*.cpp",
         "session/*.cpp",
         "websocket/*.cpp",
         "context/*.cpp",
@@ -21,6 +22,7 @@ cc_library(
         "interceptor/*.hpp",
         "di/*.hpp",
         "router/*.hpp",
+        "sse/*.hpp",
         "session/*.hpp",
         "websocket/*.hpp",
         "client/*.hpp",

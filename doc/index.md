@@ -9,6 +9,7 @@
 | [架构指南](architecture.md) | 框架设计、请求流程、线程模型、扩展点 |
 | [高级功能](advanced.md) | 拦截器、异常处理、动态 WebSocket、双向 HTTP 流、Cron、DI、Cookie |
 | [HTTP 与 WebSocket 客户端](http-client.md) | 缓冲/流式 HTTP 客户端、API_CALL 宏、WebSocket 帧客户端 |
+| [异步 Server-Sent Events](server-sent-events.md) | SSE 服务端路由、异步客户端、心跳、取消与重连策略 |
 
 ## 按主题查找
 
@@ -33,6 +34,7 @@
 - 设置响应 → [API 参考](api-reference.md#响应设置)
 - 分块流式响应 → [高级功能](advanced.md#分块流式响应)
 - 大文件双向流式代理 → [高级功能](advanced.md#双向-http-流与大文件代理)
+- 异步 SSE 服务端 → [Server-Sent Events](server-sent-events.md#服务端)
 - 普通请求体 413 上限 → [API 参考](api-reference.md#server)
 - Cookie 操作 → [高级功能](advanced.md#cookie-操作)
 
@@ -57,6 +59,7 @@
 - 多 Host 权重分发 → [HTTP 客户端](http-client.md#多-host-权重分发)
 - API_CALL 宏 → [HTTP 客户端](http-client.md#api_call-宏自动生成客户端方法)
 - WebSocket 客户端 → [HTTP 客户端](http-client.md#websocket-客户端)
+- 异步 SSE 客户端 → [Server-Sent Events](server-sent-events.md#客户端)
 
 ### 架构
 - 请求处理流程 → [架构指南](architecture.md#请求处理流程)

@@ -19,6 +19,7 @@
 
 namespace khttpd::framework
 {
+  namespace sse { class SseSession; }
   struct OpenApiInfo;
   class HttpRouter;
   void install_openapi_routes(HttpRouter& router, const OpenApiInfo& info,
@@ -30,6 +31,7 @@ namespace khttpd::framework
   using HttpStreamComplete = std::function<void()>;
   using HttpStreamHandler = std::function<void(HttpContext&, std::shared_ptr<HttpRequestStream>,
                                                std::shared_ptr<HttpResponseStream>, HttpStreamComplete)>;
+  using SseHandler = std::function<void(HttpContext&, std::shared_ptr<sse::SseSession>)>;
   using UnknownExceptionHandler = std::function<void(HttpContext&)>;
 
   struct RouteHeader
@@ -247,6 +249,7 @@ namespace khttpd::framework
     // Async handlers must invoke complete exactly once, from any thread.
     void async_route(const std::string& path, boost::beast::http::verb method, HttpAsyncHandler handler);
     void stream(const std::string& path, boost::beast::http::verb method, HttpStreamHandler handler);
+    void sse(const std::string& path, SseHandler handler);
 
     // Used by HttpSession after it has parsed only the request header.
     bool is_stream_route(const std::string& path, boost::beast::http::verb method) const;
