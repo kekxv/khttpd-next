@@ -35,5 +35,13 @@ def request(path):
 homepage = request("/")
 assert homepage.startswith("HTTP/1.1 200")
 assert 'href="/docs"' in homepage, "homepage must link to API documentation"
+assert 'href="/events-demo"' in homepage, "homepage must link to the visual SSE demo"
+
+sse_demo = request("/events-demo")
+assert sse_demo.startswith("HTTP/1.1 200")
+assert "new EventSource('/events')" in sse_demo, "SSE demo must subscribe to the event stream"
+assert 'id="connection-status"' in sse_demo, "SSE demo must show connection state"
+assert 'id="event-list"' in sse_demo, "SSE demo must render received events"
+assert "eventList.children.length > 100" in sse_demo, "SSE demo must bound retained event rows"
 assert request("/docs").startswith("HTTP/1.1 200")
 PY
