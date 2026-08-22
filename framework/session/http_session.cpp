@@ -1,6 +1,7 @@
 #include "http_session.hpp"
 
 #include "context/http_context.hpp"
+#include <boost/asio/bind_cancellation_slot.hpp>
 #include <fmt/core.h>
 #include <spdlog/spdlog.h>
 #include <sstream>
@@ -55,6 +56,10 @@ public:
   { if (session_) session_->write_stream_response(b, std::move(cb)); else cb(net::error::operation_aborted); }
   void async_finish(Callback cb) override
   { if (session_) session_->finish_stream_response(std::move(cb)); else cb(net::error::operation_aborted); }
+  void async_wait_disconnect(Callback cb) override
+  { if (session_) session_->wait_stream_disconnect(std::move(cb)); }
+  void cancel_disconnect_wait() override
+  { if (session_) session_->cancel_stream_disconnect_wait(); }
   void cancel_request_body() override { if (session_) session_->cancel_stream_body(); }
   void cancel() override { if (session_) session_->cancel_session(); }
 };
@@ -286,6 +291,7 @@ void HttpSession::start_stream_response(HttpResponseStream::ResponseHead head, H
   auto self = shared_from_this();
   net::post(stream_.get_executor(), [self, head = std::move(head), callback = std::move(callback)]() mutable
   {
+    self->disconnect_wait_cancelled_ = false;
     self->streaming_response_ = {};
     self->streaming_response_.result(head.result()); self->streaming_response_.version(head.version());
     self->streaming_response_.keep_alive(head.keep_alive());
@@ -338,6 +344,39 @@ void HttpSession::finish_stream_response(HttpResponseStream::Callback callback)
         self->streaming_response_serializer_.reset();
         if (!ec && keep_alive) self->do_read(); else self->do_close();
       });
+  });
+}
+
+void HttpSession::wait_stream_disconnect(HttpResponseStream::Callback callback)
+{
+  auto self = shared_from_this();
+  net::post(stream_.get_executor(), [self, callback = std::move(callback)]() mutable
+  {
+    // A request body is still readable on this connection and must not be mistaken for a peer disconnect.
+    if (self->disconnect_wait_cancelled_)
+      return callback(net::error::operation_aborted);
+    if ((self->request_parser_ && !self->request_parser_->is_done()) || self->disconnect_wait_active_) return;
+    self->disconnect_wait_active_ = true;
+    self->stream_.socket().async_receive(net::buffer(self->disconnect_probe_),
+      net::bind_cancellation_slot(self->disconnect_wait_cancellation_.slot(),
+        [self, callback = std::move(callback)](beast::error_code ec, const std::size_t bytes) mutable
+        {
+          self->disconnect_wait_active_ = false;
+          if (!ec)
+            ec = bytes == 0 ? net::error::eof : make_error_code(boost::system::errc::protocol_error);
+          callback(ec);
+        }));
+  });
+}
+
+void HttpSession::cancel_stream_disconnect_wait()
+{
+  auto self = shared_from_this();
+  net::dispatch(stream_.get_executor(), [self]
+  {
+    self->disconnect_wait_cancelled_ = true;
+    if (self->disconnect_wait_active_)
+      self->disconnect_wait_cancellation_.emit(net::cancellation_type::terminal);
   });
 }
 

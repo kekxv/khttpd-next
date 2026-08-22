@@ -47,8 +47,10 @@ router.sse("/events", handler, 256 * 1024);
 `std::shared_ptr<SseSession>`。`close()` 会等待已排队事件写完再发送结束块；
 `cancel()` 会立即中断连接。两者最终都只触发一次 `on_close`。
 
-心跳建议使用注释帧，例如 `send_comment("heartbeat")`；心跳周期和空闲连接管理由
-业务服务决定。
+khttpd 会在响应流期间独立监听 TCP 读侧。客户端主动关闭连接时，即使服务端没有
+后续事件写入，也会立即结束 `SseSession` 并触发一次 `on_close`，因此资源回收不依赖
+业务心跳。心跳仍建议使用注释帧，例如 `send_comment("heartbeat")`，用于避免代理、
+负载均衡器或 NAT 将空闲连接回收；心跳周期由业务服务决定。
 
 仓库的 `example` 包含可直接运行的 `/events` 演示：连接后立即发送 `welcome` 和
 首个 `tick` 事件，之后每秒继续推送。运行 `bazel run //:app` 后打开

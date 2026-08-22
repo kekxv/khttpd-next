@@ -4,6 +4,7 @@
 #include <boost/filesystem.hpp>
 #include <boost/beast.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/cancellation_signal.hpp>
 #include <memory>
 #include <queue>
 #include <sstream>
@@ -63,6 +64,10 @@ namespace khttpd::framework
     bool stream_completed_ = false;
     std::optional<tcp::endpoint> peer_endpoint_;
     bool request_body_cancelled_ = false;
+    std::array<char, 1> disconnect_probe_{};
+    net::cancellation_signal disconnect_wait_cancellation_;
+    bool disconnect_wait_active_ = false;
+    bool disconnect_wait_cancelled_ = false;
 
     // Chunked streaming support
     std::shared_ptr<std::queue<std::string>> chunk_queue_;
@@ -83,6 +88,8 @@ namespace khttpd::framework
     void start_stream_response(HttpResponseStream::ResponseHead head, HttpResponseStream::Callback callback);
     void write_stream_response(net::const_buffer source, HttpResponseStream::Callback callback);
     void finish_stream_response(HttpResponseStream::Callback callback);
+    void wait_stream_disconnect(HttpResponseStream::Callback callback);
+    void cancel_stream_disconnect_wait();
     void on_read(const beast::error_code& ec, std::size_t bytes_transferred);
 
     void handle_request();

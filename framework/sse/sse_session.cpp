@@ -47,8 +47,24 @@ namespace khttpd::framework::sse
       response->async_start(std::move(head), [self = shared_from_this()](boost::system::error_code ec)
       {
         if (ec) return self->finish(ec);
-        { std::lock_guard lock(self->mutex); self->started = true; }
+        bool watch_disconnect = false;
+        {
+          std::lock_guard lock(self->mutex);
+          self->started = true;
+          watch_disconnect = !self->closing && !self->closed;
+        }
+        if (watch_disconnect) self->wait_for_disconnect();
         self->write_next();
+      });
+    }
+
+    void wait_for_disconnect()
+    {
+      response->async_wait_disconnect([self = shared_from_this()](boost::system::error_code ec)
+      {
+        if (ec == boost::asio::error::operation_aborted) return;
+        self->response->cancel();
+        self->finish(ec ? ec : boost::asio::error::eof);
       });
     }
 
@@ -119,6 +135,7 @@ namespace khttpd::framework::sse
         queue.clear();
         handler = std::move(close_handler);
       }
+      response->cancel_disconnect_wait();
       invoke_close_handler(handler, ec);
     }
 
@@ -146,7 +163,12 @@ namespace khttpd::framework::sse
   void SseSession::start() { impl_->start(); }
   bool SseSession::send(SseEvent event) { return impl_->enqueue(format_sse_event(event)); }
   bool SseSession::send_comment(std::string comment) { return impl_->enqueue(format_sse_comment(comment)); }
-  void SseSession::close() { { std::lock_guard lock(impl_->mutex); impl_->closing = true; } impl_->write_next(); }
+  void SseSession::close()
+  {
+    impl_->response->cancel_disconnect_wait();
+    { std::lock_guard lock(impl_->mutex); impl_->closing = true; }
+    impl_->write_next();
+  }
   void SseSession::cancel() { impl_->response->cancel(); impl_->finish(boost::asio::error::operation_aborted); }
   void SseSession::on_close(CloseHandler handler)
   {

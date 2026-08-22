@@ -455,6 +455,10 @@ SSE routes run the ordinary pre-request interceptor chain before their handler;
 an authentication or authorization interceptor can reject the request before
 any event-stream response headers are written.
 
+The server also monitors the connection's read side while an SSE response is
+open. A passive client disconnect completes the session and invokes `on_close`
+even when the application has no event or heartbeat waiting to be written.
+
 `SseClient` uses the same fixed-buffer streaming transport and delivers each
 complete event as soon as it arrives. Arbitrarily split lines, CRLF/LF,
 multiline `data`, comments, `id`, and numeric `retry` fields are supported.

@@ -3,6 +3,10 @@
 #include <boost/asio.hpp>
 #include <boost/beast/http.hpp>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <future>
+#include <mutex>
 #include <stdexcept>
 #include <thread>
 
@@ -26,6 +30,7 @@ namespace
   {
   public:
     bool finished = false;
+    bool disconnect_wait_started = false;
 
     void async_start(ResponseHead, Callback callback) override { callback({}); }
     void async_write_some(net::const_buffer, Callback callback) override { callback({}); }
@@ -34,6 +39,7 @@ namespace
       finished = true;
       callback({});
     }
+    void async_wait_disconnect(Callback) override { disconnect_wait_started = true; }
     void cancel() override {}
   };
 }
@@ -253,6 +259,87 @@ TEST(SseSessionTest, ContainsExceptionsThrownByCloseCallback)
 
   EXPECT_NO_THROW(session.start());
   EXPECT_TRUE(response->finished);
+}
+
+TEST(SseSessionTest, GracefulCloseBeforeStartDoesNotArmADisconnectRead)
+{
+  auto response = std::make_shared<ImmediateResponseStream>();
+  sse::SseSession session(response, 11, true);
+  session.close();
+
+  session.start();
+
+  EXPECT_TRUE(response->finished);
+  EXPECT_FALSE(response->disconnect_wait_started);
+}
+
+TEST(SseSessionTest, DetectsAPassiveClientDisconnectWithoutAnotherWrite)
+{
+  test::TempWebRoot web_root;
+  fw::HttpRouter router;
+  fw::WebsocketRouter websocket_router;
+  std::mutex mutex;
+  std::condition_variable closed_condition;
+  std::shared_ptr<sse::SseSession> server_session;
+  bool closed = false;
+  router.sse("/events", [&](fw::HttpContext&, std::shared_ptr<sse::SseSession> session)
+  {
+    {
+      std::lock_guard lock(mutex);
+      server_session = session;
+    }
+    session->on_close([&](boost::system::error_code)
+    {
+      {
+        std::lock_guard lock(mutex);
+        closed = true;
+      }
+      closed_condition.notify_one();
+    });
+  });
+
+  net::io_context server_ioc;
+  auto guard = net::make_work_guard(server_ioc);
+  tcp::acceptor acceptor(server_ioc, {net::ip::address_v4::loopback(), 0});
+  const auto endpoint = acceptor.local_endpoint();
+  acceptor.async_accept([&](boost::system::error_code ec, tcp::socket socket)
+  {
+    if (ec) return;
+    std::make_shared<fw::HttpSession>(std::move(socket), router, websocket_router,
+                                      web_root.path.string(), boost::filesystem::canonical(web_root.path))->run();
+  });
+  std::thread server_thread([&] { server_ioc.run(); });
+
+  net::io_context client_ioc;
+  tcp::socket client(client_ioc);
+  client.connect(endpoint);
+  http::request<http::empty_body> request{http::verb::get, "/events", 11};
+  request.set(http::field::host, "localhost");
+  request.keep_alive(true);
+  http::write(client, request);
+  boost::beast::flat_buffer response_buffer;
+  http::response_parser<http::empty_body> response_parser;
+  http::read_header(client, response_buffer, response_parser);
+  boost::system::error_code ignored;
+  client.shutdown(tcp::socket::shutdown_both, ignored);
+  client.close(ignored);
+
+  std::unique_lock lock(mutex);
+  const bool detected = closed_condition.wait_for(lock, std::chrono::milliseconds(500), [&] { return closed; });
+  auto session = server_session;
+  server_session.reset();
+  lock.unlock();
+  if (session && session->is_open()) session->cancel();
+  session.reset();
+
+  std::promise<void> cleanup_complete;
+  auto cleanup_future = cleanup_complete.get_future();
+  net::post(server_ioc, [&cleanup_complete] { cleanup_complete.set_value(); });
+  cleanup_future.wait();
+
+  guard.reset();
+  server_thread.join();
+  EXPECT_TRUE(detected);
 }
 
 TEST(SseClientTest, DeliversEventsFromAnAsyncEventStream)
