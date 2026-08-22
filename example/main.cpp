@@ -16,6 +16,7 @@
 #include "HelloController.hpp"
 #include "HelloStreamController.hpp"
 #include "HelloWsController.hpp"
+#include "SseDemo.hpp"
 #include "TypedHelloController.hpp"
 
 namespace net = boost::asio;
@@ -44,13 +45,14 @@ namespace
   HelloStreamController::create()->register_routes(http_router)->register_routes(ws_router);
   HelloWsController::create()->register_routes(http_router)->register_routes(ws_router);
   TypedHelloController::create()->register_routes(http_router)->register_routes(ws_router);
+  SseDemo::register_routes(http_router);
 
   http_router.get("/", [](khttpd::framework::HttpContext& ctx)
   {
     ctx.set_status(beast::http::status::ok);
     ctx.set_content_type("text/html");
     ctx.set_body(
-      R"(<h1>Hello from khttpd!</h1><p><a href="/docs">API documentation</a></p><p>Try <a href="/hello?name=World">/hello?name=World</a> or <a href="/info">/info</a></p><p>Dynamic paths: <a href="/users/123">/users/123</a>, <a href="/users/profile">/users/profile</a>, <a href="/items/book/id/456">/items/book/id/456</a>, <a href="/files/a/b/c.txt">/files/a/b/c.txt</a></p><p>POST examples: /api/json, /api/form, /api/upload</p><p>Or connect to <a href="/ws">WebSocket</a></p><p>Or connect to <a href="/chat">WebSocket Chat</a></p>)");
+      R"(<h1>Hello from khttpd!</h1><p><a href="/docs">API documentation</a></p><p>Try <a href="/hello?name=World">/hello?name=World</a> or <a href="/info">/info</a></p><p>Dynamic paths: <a href="/users/123">/users/123</a>, <a href="/users/profile">/users/profile</a>, <a href="/items/book/id/456">/items/book/id/456</a>, <a href="/files/a/b/c.txt">/files/a/b/c.txt</a></p><p>POST examples: /api/json, /api/form, /api/upload</p><p>Open <a href="/events">the SSE event stream</a> with an SSE client or <code>curl -N</code>.</p><p>Or connect to <a href="/ws">WebSocket</a></p><p>Or connect to <a href="/chat">WebSocket Chat</a></p>)");
   }, {"Example service home", "Links to the sample HTTP, streaming, WebSocket, and API documentation endpoints."});
 
   http_router.get("/hello", [](khttpd::framework::HttpContext& ctx)

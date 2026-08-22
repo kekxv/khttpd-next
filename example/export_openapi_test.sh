@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-app="${TEST_SRCDIR}/${TEST_WORKSPACE}/example/app"
+app="${TEST_SRCDIR}/${TEST_WORKSPACE}/app"
 ready="${TEST_TMPDIR}/port-ready"
 output="${TEST_TMPDIR}/example-openapi.json"
 

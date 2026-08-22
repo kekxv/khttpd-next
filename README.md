@@ -459,6 +459,9 @@ any event-stream response headers are written.
 complete event as soon as it arrives. Arbitrarily split lines, CRLF/LF,
 multiline `data`, comments, `id`, and numeric `retry` fields are supported.
 
+The starter `example` exposes a running `/events` stream; after `bazel run //:app`,
+inspect it with `curl -N http://127.0.0.1:8080/events`.
+
 ```cpp
 auto events = std::make_shared<client::SseClient>(ioc); // 1 MiB event limit
 events->connect(

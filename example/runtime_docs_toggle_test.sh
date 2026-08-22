@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-app="${TEST_SRCDIR}/${TEST_WORKSPACE}/example/app"
+app="${TEST_SRCDIR}/${TEST_WORKSPACE}/app"
 log="${TEST_TMPDIR}/app.log"
 
 "${app}" --disable-openapi-docs >"${log}" 2>&1 &

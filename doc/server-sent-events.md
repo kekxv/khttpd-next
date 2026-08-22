@@ -50,6 +50,11 @@ router.sse("/events", handler, 256 * 1024);
 心跳建议使用注释帧，例如 `send_comment("heartbeat")`；心跳周期和空闲连接管理由
 业务服务决定。
 
+仓库的 `example` 包含可直接运行的 `/events` 演示：连接后立即发送 `welcome` 和
+首个 `tick` 事件，之后每秒继续推送。运行 `bazel run //:app` 后可使用
+`curl -N http://127.0.0.1:8080/events` 查看输出。定时器在连接关闭时取消，避免为
+已断开的客户端保留后台任务。
+
 ## 客户端
 
 ```cpp
@@ -79,6 +84,10 @@ subscription->connect(
 `retry`、指数退避和 `Last-Event-ID` 实现符合具体服务需求的恢复策略。
 构造函数的可选字节上限用于限制未完成行或单个事件；超限只会关闭当前订阅，并以
 `message_size` 完成关闭回调，不会终止进程。
+
+事件和关闭回调中的异常会被框架记录并收敛：事件回调异常会取消当前订阅并以
+`operation_aborted` 关闭，关闭回调异常不会穿透 Asio 的执行器。应用仍应自行处理
+业务错误，避免把可恢复错误作为控制流异常。
 
 ## 选择 SSE 还是 WebSocket
 

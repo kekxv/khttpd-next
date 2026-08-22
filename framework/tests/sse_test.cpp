@@ -20,6 +20,24 @@ namespace net = boost::asio;
 namespace client = khttpd::framework::client;
 using tcp = net::ip::tcp;
 
+namespace
+{
+  class ImmediateResponseStream final : public fw::HttpResponseStream
+  {
+  public:
+    bool finished = false;
+
+    void async_start(ResponseHead, Callback callback) override { callback({}); }
+    void async_write_some(net::const_buffer, Callback callback) override { callback({}); }
+    void async_finish(Callback callback) override
+    {
+      finished = true;
+      callback({});
+    }
+    void cancel() override {}
+  };
+}
+
 TEST(SseParserTest, PreservesAFragmentedMultilineEvent)
 {
   sse::SseParser parser;
@@ -226,6 +244,17 @@ TEST(SseSessionTest, ExplicitStartInsideRouteHandlerIsIdempotent)
   EXPECT_EQ(response.body(), "event: message\ndata: ready\n\n");
 }
 
+TEST(SseSessionTest, ContainsExceptionsThrownByCloseCallback)
+{
+  auto response = std::make_shared<ImmediateResponseStream>();
+  sse::SseSession session(response, 11, false);
+  session.on_close([](boost::system::error_code) { throw std::runtime_error("close callback failure"); });
+  session.close();
+
+  EXPECT_NO_THROW(session.start());
+  EXPECT_TRUE(response->finished);
+}
+
 TEST(SseClientTest, DeliversEventsFromAnAsyncEventStream)
 {
   net::io_context server_ioc;
@@ -383,4 +412,71 @@ TEST(SseClientTest, ClosesAnEventStreamThatExceedsTheConfiguredLimit)
 
   EXPECT_EQ(close_count, 1);
   EXPECT_EQ(closed_with, net::error::message_size);
+}
+
+TEST(SseClientTest, ContainsExceptionsThrownByUserCallbacks)
+{
+  net::io_context server_ioc;
+  tcp::acceptor acceptor(server_ioc, {net::ip::address_v4::loopback(), 0});
+  const auto port = acceptor.local_endpoint().port();
+  std::thread server([&]
+  {
+    tcp::socket socket(server_ioc);
+    acceptor.accept(socket);
+    boost::beast::flat_buffer buffer;
+    http::request<http::empty_body> request;
+    http::read(socket, buffer, request);
+    const std::string wire =
+      "HTTP/1.1 200 OK\r\n"
+      "Content-Type: text/event-stream\r\n"
+      "Connection: close\r\n\r\n"
+      "data: ready\n\n";
+    boost::system::error_code ignored;
+    net::write(socket, net::buffer(wire), ignored);
+  });
+
+  net::io_context ioc;
+  auto stream = std::make_shared<client::SseClient>(ioc);
+  int close_count = 0;
+  boost::system::error_code closed_with;
+  stream->connect(
+    "http://127.0.0.1:" + std::to_string(port) + "/events", {},
+    [](const sse::SseEvent&) { throw std::runtime_error("application callback failure"); },
+    [&](boost::system::error_code ec) { ++close_count; closed_with = ec; });
+
+  EXPECT_NO_THROW(ioc.run());
+  server.join();
+
+  EXPECT_EQ(close_count, 1);
+  EXPECT_EQ(closed_with, net::error::operation_aborted);
+}
+
+TEST(SseClientTest, ContainsExceptionsThrownByCloseCallback)
+{
+  net::io_context server_ioc;
+  tcp::acceptor acceptor(server_ioc, {net::ip::address_v4::loopback(), 0});
+  const auto port = acceptor.local_endpoint().port();
+  std::thread server([&]
+  {
+    tcp::socket socket(server_ioc);
+    acceptor.accept(socket);
+    boost::beast::flat_buffer buffer;
+    http::request<http::empty_body> request;
+    http::read(socket, buffer, request);
+    http::response<http::empty_body> response{http::status::ok, 11};
+    response.set(http::field::content_type, "application/json");
+    response.content_length(0);
+    response.keep_alive(false);
+    http::write(socket, response);
+  });
+
+  net::io_context ioc;
+  auto stream = std::make_shared<client::SseClient>(ioc);
+  stream->connect(
+    "http://127.0.0.1:" + std::to_string(port) + "/events", {},
+    [](const sse::SseEvent&) {},
+    [](boost::system::error_code) { throw std::runtime_error("close callback failure"); });
+
+  EXPECT_NO_THROW(ioc.run());
+  server.join();
 }

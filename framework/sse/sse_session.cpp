@@ -2,8 +2,11 @@
 
 #include <boost/asio/buffer.hpp>
 #include <deque>
+#include <exception>
 #include <mutex>
 #include <utility>
+
+#include <spdlog/spdlog.h>
 
 namespace khttpd::framework::sse
 {
@@ -116,7 +119,24 @@ namespace khttpd::framework::sse
         queue.clear();
         handler = std::move(close_handler);
       }
-      if (handler) handler(ec);
+      invoke_close_handler(handler, ec);
+    }
+
+    static void invoke_close_handler(const CloseHandler& handler, const boost::system::error_code ec)
+    {
+      if (!handler) return;
+      try
+      {
+        handler(ec);
+      }
+      catch (const std::exception& error)
+      {
+        spdlog::error("SSE session close callback failed: {}", error.what());
+      }
+      catch (...)
+      {
+        spdlog::error("SSE session close callback failed with a non-standard exception");
+      }
     }
   };
 
@@ -138,7 +158,7 @@ namespace khttpd::framework::sse
       error = impl_->close_error;
       if (!already_closed) impl_->close_handler = std::move(handler);
     }
-    if (already_closed && handler) handler(error);
+    if (already_closed) Impl::invoke_close_handler(handler, error);
   }
   bool SseSession::is_open() const { std::lock_guard lock(impl_->mutex); return !impl_->closing && !impl_->closed; }
 }

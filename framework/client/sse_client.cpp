@@ -6,9 +6,12 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <exception>
 #include <mutex>
 #include <stdexcept>
 #include <utility>
+
+#include <spdlog/spdlog.h>
 
 #include "client/http_client_stream.hpp"
 #include "sse/sse_parser.hpp"
@@ -71,7 +74,7 @@ namespace khttpd::framework::client
       }
       if (duplicate)
       {
-        if (on_close) on_close(make_error_code(boost::system::errc::operation_in_progress));
+        invoke_close_handler(on_close, make_error_code(boost::system::errc::operation_in_progress));
         return;
       }
 
@@ -138,7 +141,21 @@ namespace khttpd::framework::client
         if (terminal) return;
         handler = event_handler;
       }
-      if (handler) handler(event);
+      if (!handler) return;
+      try
+      {
+        handler(event);
+      }
+      catch (const std::exception& error)
+      {
+        spdlog::error("SSE event callback failed: {}", error.what());
+        finish(net::error::operation_aborted);
+      }
+      catch (...)
+      {
+        spdlog::error("SSE event callback failed with a non-standard exception");
+        finish(net::error::operation_aborted);
+      }
     }
 
     bool is_terminal()
@@ -158,7 +175,7 @@ namespace khttpd::framework::client
         event_handler = {};
       }
       if (ec) stream->cancel();
-      if (handler) handler(ec);
+      invoke_close_handler(handler, ec);
     }
 
     void cancel()
@@ -176,6 +193,23 @@ namespace khttpd::framework::client
         close_handler = {};
       }
       stream->cancel();
+    }
+
+    static void invoke_close_handler(const CloseHandler& handler, const boost::system::error_code ec)
+    {
+      if (!handler) return;
+      try
+      {
+        handler(ec);
+      }
+      catch (const std::exception& error)
+      {
+        spdlog::error("SSE close callback failed: {}", error.what());
+      }
+      catch (...)
+      {
+        spdlog::error("SSE close callback failed with a non-standard exception");
+      }
     }
   };
 
